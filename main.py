@@ -20,6 +20,28 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         
     print(f"[{currency}] Detected Spot price: {spot:.4f}")
     
+    # Calculate ATM implied volatility and daily sigma
+    import math
+    if not raw_df.empty:
+        raw_df = raw_df.reset_index(drop=True)
+        atm_idx = (raw_df['Strike'] - spot).abs().idxmin()
+        atm_row = raw_df.loc[atm_idx]
+        price_atm = atm_row['Settle'] / 10000.0 if currency == 'EUR' else atm_row['Settle']
+        is_call_val = atm_row['Is_Call']
+        if isinstance(is_call_val, pd.Series):
+            is_call_val = is_call_val.iloc[0]
+        strike_atm = atm_row['Strike']
+        if isinstance(strike_atm, pd.Series):
+            strike_atm = strike_atm.iloc[0]
+        iv_atm = implied_volatility(price_atm, spot, strike_atm, 0.08, 0.0, 'C' if is_call_val else 'P')
+        if iv_atm <= 0.001:
+            iv_atm = 0.07 if currency == 'EUR' else 0.08
+    else:
+        iv_atm = 0.07 if currency == 'EUR' else 0.08
+        
+    sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
+    print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
+    
     contract_size = 125000 if currency == 'EUR' else 62500
     T = 0.08
     r = 0.0
@@ -39,27 +61,35 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
                 is_call = (row['Delta'] < 0.5)
                 
         # Calculate Greeks & GEX
+        price = row['Settle'] / 10000.0 if currency == 'EUR' else row['Settle']
+        
         if is_call:
-            iv = implied_volatility(row['Settle'], spot, K, T, r, 'C')
+            iv = implied_volatility(price, spot, K, T, r, 'C')
             gamma = bs_gamma(spot, K, T, r, iv)
             gex = calculate_gex(gamma, row['OI'], contract_size, spot)
             abs_gamma = calculate_absolute_gamma(gamma, row['OI'])
             call_oi = row['OI']
             put_oi = 0
+            call_settle = price
+            put_settle = 0.0
         else:
-            iv = implied_volatility(row['Settle'], spot, K, T, r, 'P')
+            iv = implied_volatility(price, spot, K, T, r, 'P')
             gamma = bs_gamma(spot, K, T, r, iv)
             gex = -calculate_gex(gamma, row['OI'], contract_size, spot)
             abs_gamma = calculate_absolute_gamma(gamma, row['OI'])
             call_oi = 0
             put_oi = row['OI']
+            call_settle = 0.0
+            put_settle = price
             
         calculated_rows.append({
             "Strike": K,
             "GEX": gex,
             "Abs_Gamma": abs_gamma,
             "Call_OI": call_oi,
-            "Put_OI": put_oi
+            "Put_OI": put_oi,
+            "Call_Settle": call_settle,
+            "Put_Settle": put_settle
         })
         
     calc_df = pd.DataFrame(calculated_rows)
@@ -69,11 +99,19 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         'GEX': 'sum',
         'Abs_Gamma': 'sum',
         'Call_OI': 'sum',
-        'Put_OI': 'sum'
+        'Put_OI': 'sum',
+        'Call_Settle': 'max',
+        'Put_Settle': 'max'
     }).reset_index()
     
     summary.rename(columns={'GEX': 'Total_GEX', 'Abs_Gamma': 'Total_Abs_Gamma'}, inplace=True)
     summary.insert(0, 'Currency', currency)
+    
+    # Add volatility bands columns
+    summary['R68_High'] = spot + sigma_1d
+    summary['R68_Low'] = spot - sigma_1d
+    summary['R95_High'] = spot + 2.0 * sigma_1d
+    summary['R95_Low'] = spot - 2.0 * sigma_1d
     
     # Save to CSV
     today_str = datetime.date.today().strftime("%Y-%m-%d")
