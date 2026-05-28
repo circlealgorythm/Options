@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                           CME_GEX_Levels_EA.mq5  |
 //|                                  Copyright 2026, circlealgorythm |
 //|                                             https://github.com/  |
@@ -125,15 +125,26 @@ void UpdateLevels()
 //+------------------------------------------------------------------+
 bool FetchAndParseDate(string date_str)
 {
-   string url = "https://raw.githubusercontent.com/" + InpGithubUser + "/" + InpGithubRepo + 
-                "/main/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
-                
+   string url;
    string headers = "User-Agent: MetaTrader5\r\n";
+   
    if(StringLen(InpGithubToken) > 0)
    {
-      headers += "Authorization: token " + InpGithubToken + "\r\n";
+      // Use GitHub REST API for private repositories to support Authorization headers
+      url = "https://api.github.com/repos/" + InpGithubUser + "/" + InpGithubRepo + 
+            "/contents/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
+            
+      headers += "Authorization: Bearer " + InpGithubToken + "\r\n";
+      headers += "Accept: application/vnd.github.v3.raw\r\n";
+      headers += "X-GitHub-Api-Version: 2022-11-28\r\n";
    }
-   
+   else
+   {
+      // Fallback to raw URL for public repositories
+      url = "https://raw.githubusercontent.com/" + InpGithubUser + "/" + InpGithubRepo + 
+            "/main/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
+   }
+                
    char post[], result_data[];
    string result_headers;
    int timeout = 5000; // 5 seconds
@@ -156,7 +167,7 @@ bool FetchAndParseDate(string date_str)
    {
       int err = GetLastError();
       if(err == 4014) // ERR_FUNCTION_NOT_ALLOWED
-         Print("WebRequest failed (4014). Allow URL 'https://raw.githubusercontent.com' in Tools -> Options -> Expert Advisors.");
+         Print("WebRequest failed (4014). Allow URL 'https://api.github.com' in Tools -> Options -> Expert Advisors.");
       else
          PrintFormat("WebRequest error for %s. HTTP Code: %d, MT5 Error: %d", date_str, res, err);
          
