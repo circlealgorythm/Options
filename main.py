@@ -94,15 +94,35 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         
     calc_df = pd.DataFrame(calculated_rows)
     
+    # Find settlement prices from the option maturity that has the maximum Open Interest (OI) per strike.
+    # We filter by Call and Put separately to avoid mixing types and getting zero settle values.
+    # We also require settle > 0.0 to filter out zero-premium rows from weekly/expired series or parser misses.
+    call_df = calc_df[(calc_df['Call_OI'] > 0) & (calc_df['Call_Settle'] > 0.0)]
+    if not call_df.empty:
+        idx_max_call = call_df.groupby('Strike')['Call_OI'].idxmax()
+        call_settle_series = call_df.loc[idx_max_call, ['Strike', 'Call_Settle']].set_index('Strike')['Call_Settle']
+    else:
+        # Fallback to absolute max if no positive OI rows have positive settle
+        call_settle_series = calc_df.groupby('Strike')['Call_Settle'].max()
+        
+    put_df = calc_df[(calc_df['Put_OI'] > 0) & (calc_df['Put_Settle'] > 0.0)]
+    if not put_df.empty:
+        idx_max_put = put_df.groupby('Strike')['Put_OI'].idxmax()
+        put_settle_series = put_df.loc[idx_max_put, ['Strike', 'Put_Settle']].set_index('Strike')['Put_Settle']
+    else:
+        # Fallback to absolute max if no positive OI rows have positive settle
+        put_settle_series = calc_df.groupby('Strike')['Put_Settle'].max()
+    
     # Group by Strike and sum values across all expirations/series
     summary = calc_df.groupby('Strike').agg({
         'GEX': 'sum',
         'Abs_Gamma': 'sum',
         'Call_OI': 'sum',
-        'Put_OI': 'sum',
-        'Call_Settle': 'max',
-        'Put_Settle': 'max'
+        'Put_OI': 'sum'
     }).reset_index()
+    
+    summary['Call_Settle'] = summary['Strike'].map(call_settle_series).fillna(0.0)
+    summary['Put_Settle'] = summary['Strike'].map(put_settle_series).fillna(0.0)
     
     summary.rename(columns={'GEX': 'Total_GEX', 'Abs_Gamma': 'Total_Abs_Gamma'}, inplace=True)
     summary.insert(0, 'Currency', currency)
