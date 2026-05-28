@@ -5,8 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, circlealgorythm"
 #property link      "https://github.com/circlealgorythm/Options"
-#property version   "1.01"
-#property description "Expert Advisor to fetch CME GEX options levels from GitHub and plot them."
+#property version   "1.02"
+#property description "Expert Advisor to fetch CME GEX options levels from GitHub and plot GEX walls & MDD levels."
 
 //--- Inputs
 input group "--- GitHub Configuration ---"
@@ -20,6 +20,8 @@ input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to di
 input color    InpColorCall   = clrMediumSeaGreen; // Positive GEX Color (Support)
 input color    InpColorPut    = clrCrimson;        // Negative GEX Color (Resistance)
 input color    InpColorGamma  = clrDeepSkyBlue;    // Max Absolute Gamma Color
+input color    InpColorMDDCall= clrRoyalBlue;      // Call MDD (Breakeven) Color
+input color    InpColorMDDPut = clrOrangeRed;      // Put MDD (Breakeven) Color
 input int      InpRefreshHours= 4;                 // Refresh rate in hours
 
 //--- Global Variables
@@ -32,7 +34,6 @@ string         g_obj_prefix = "CMEGEX_";
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // Identify base currency (EUR or GBP)
    string symbol = Symbol();
    if(StringFind(symbol, "EUR") >= 0)
       g_base_currency = "EUR";
@@ -46,10 +47,8 @@ int OnInit()
 
    Print("CME GEX EA initialized for ", g_base_currency, "USD. Loading historical levels...");
    
-   // Create a timer to refresh data periodically
    EventSetTimer(3600); // Trigger timer event every hour
    
-   // Initial data load
    UpdateLevels();
    
    return(INIT_SUCCEEDED);
@@ -70,7 +69,6 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // We update on timer, no need to run WebRequest on every tick
 }
 
 //+------------------------------------------------------------------+
@@ -105,7 +103,6 @@ void UpdateLevels()
       MqlDateTime dt;
       TimeToStruct(target_date, dt);
       
-      // Skip weekends since CME options don't update
       if(dt.day_of_week == 0 || dt.day_of_week == 6)
          continue;
          
@@ -130,7 +127,6 @@ bool FetchAndParseDate(string date_str)
    
    if(StringLen(InpGithubToken) > 0)
    {
-      // Use GitHub REST API for private repositories to support Authorization headers
       url = "https://api.github.com/repos/" + InpGithubUser + "/" + InpGithubRepo + 
             "/contents/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
             
@@ -140,7 +136,6 @@ bool FetchAndParseDate(string date_str)
    }
    else
    {
-      // Fallback to raw URL for public repositories
       url = "https://raw.githubusercontent.com/" + InpGithubUser + "/" + InpGithubRepo + 
             "/main/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
    }
@@ -160,13 +155,12 @@ bool FetchAndParseDate(string date_str)
    }
    else if(res == 404)
    {
-      // 404 is normal for days with no bulletin data (e.g. holidays or today's data before update)
       return false;
    }
    else
    {
       int err = GetLastError();
-      if(err == 4014) // ERR_FUNCTION_NOT_ALLOWED
+      if(err == 4014)
          Print("WebRequest failed (4014). Allow URL 'https://api.github.com' in Tools -> Options -> Expert Advisors.");
       else
          PrintFormat("WebRequest error for %s. HTTP Code: %d, MT5 Error: %d", date_str, res, err);
@@ -182,14 +176,31 @@ struct OptionRow {
    double strike;
    double total_gex;
    double total_abs_gamma;
+   double call_settle;
+   double put_settle;
 };
+
+//+------------------------------------------------------------------+
+//| Format volume numbers to K/M format                              |
+//+------------------------------------------------------------------+
+string FormatVolume(double value)
+{
+   double abs_val = MathAbs(value);
+   string sign = (value < 0) ? "-" : "";
+   
+   if(abs_val >= 1000000.0)
+      return StringFormat("%s%.2fM", sign, abs_val / 1000000.0);
+   else if(abs_val >= 1000.0)
+      return StringFormat("%s%.0fk", sign, abs_val / 1000.0);
+   else
+      return StringFormat("%s%.0f", sign, abs_val);
+}
 
 //+------------------------------------------------------------------+
 //| Parse CSV contents and draw levels                               |
 //+------------------------------------------------------------------+
 void ParseCSV(const string &csv_data, string date_str)
 {
-   // Strip carriage returns to ensure clean splitting
    string clean_csv = csv_data;
    StringReplace(clean_csv, "\r", "");
    
@@ -224,19 +235,23 @@ void ParseCSV(const string &csv_data, string date_str)
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
       
-      // Expected minimum 4 columns: Currency,Strike,Total_GEX,Total_Abs_Gamma
+      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Call_OI,Put_OI,Call_Settle,Put_Settle
       if(total_cols < 4)
          continue;
          
       double strike = StringToDouble(columns[1]);
       double total_gex = StringToDouble(columns[2]);
       double total_abs_gamma = StringToDouble(columns[3]);
+      double call_settle = (total_cols >= 7) ? StringToDouble(columns[6]) : 0.0;
+      double put_settle = (total_cols >= 8) ? StringToDouble(columns[7]) : 0.0;
       
       if(MathAbs(total_gex) >= InpMinGexFilter)
       {
          rows[valid_rows].strike = strike;
          rows[valid_rows].total_gex = total_gex;
          rows[valid_rows].total_abs_gamma = total_abs_gamma;
+         rows[valid_rows].call_settle = call_settle;
+         rows[valid_rows].put_settle = put_settle;
          
          double abs_gex = MathAbs(total_gex);
          if(abs_gex > max_abs_gex)
@@ -255,19 +270,18 @@ void ParseCSV(const string &csv_data, string date_str)
    if(valid_rows == 0)
       return;
       
-   // Calculate time bounds for the specific day (strictly horizontal bounds)
    datetime time_start = StringToTime(date_str + " 00:00:00");
    datetime time_end = StringToTime(date_str + " 23:59:59");
    
-   // Second pass: Draw the levels
+   // Second pass: Draw the levels & labels
    for(int i = 0; i < valid_rows; i++)
    {
       double strike = rows[i].strike;
       double gex = rows[i].total_gex;
+      double ag = rows[i].total_abs_gamma;
       
       color line_color = (gex >= 0) ? InpColorCall : InpColorPut;
       
-      // Scale thickness between 1 and 4 based on max GEX
       int line_width = 1;
       if(max_abs_gex > 0)
       {
@@ -284,21 +298,101 @@ void ParseCSV(const string &csv_data, string date_str)
       
       string obj_name = StringFormat("%s%s_%s_%.4f", g_obj_prefix, g_base_currency, date_str, strike);
       
-      // Draw daily horizontal bounded trendline
+      // Draw horizontal bounded trendline for GEX Wall
       if(ObjectCreate(0, obj_name, OBJ_TREND, 0, time_start, strike, time_end, strike))
       {
          ObjectSetInteger(0, obj_name, OBJPROP_RAY_RIGHT, false);
-         ObjectSetInteger(0, obj_name, OBJPROP_RAY_LEFT, false); // Crucial for bounded line
+         ObjectSetInteger(0, obj_name, OBJPROP_RAY_LEFT, false);
          ObjectSetInteger(0, obj_name, OBJPROP_COLOR, line_color);
          ObjectSetInteger(0, obj_name, OBJPROP_WIDTH, line_width);
          ObjectSetInteger(0, obj_name, OBJPROP_STYLE, STYLE_SOLID);
          ObjectSetInteger(0, obj_name, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true); // Keep object list clean
-         ObjectSetInteger(0, obj_name, OBJPROP_BACK, true); // Behind candlesticks
+         ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, obj_name, OBJPROP_BACK, true);
          
          string tooltip = StringFormat("Date: %s | Strike: %.4f | GEX: %.0f | Abs Gamma: %.0f", 
-                                       date_str, strike, gex, rows[i].total_abs_gamma);
+                                       date_str, strike, gex, ag);
          ObjectSetString(0, obj_name, OBJPROP_TOOLTIP, tooltip);
+      }
+      
+      // Calculate percentages for labels
+      int gex_pct = (max_abs_gex > 0) ? (int)MathRound((MathAbs(gex) / max_abs_gex) * 100.0) : 0;
+      int ag_pct = (max_abs_gamma > 0) ? (int)MathRound((ag / max_abs_gamma) * 100.0) : 0;
+      
+      // Draw text label on the left side of the level
+      string text_obj_name = obj_name + "_TXT";
+      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, time_start, strike))
+      {
+         string text_val = StringFormat("GEX %s %d%%\nAG %s %d%%", FormatVolume(gex), gex_pct, FormatVolume(ag), ag_pct);
+         ObjectSetString(0, text_obj_name, OBJPROP_TEXT, text_val);
+         ObjectSetInteger(0, text_obj_name, OBJPROP_COLOR, line_color);
+         ObjectSetInteger(0, text_obj_name, OBJPROP_FONTSIZE, 8);
+         ObjectSetString(0, text_obj_name, OBJPROP_FONT, "Consolas");
+         ObjectSetInteger(0, text_obj_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+         ObjectSetInteger(0, text_obj_name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, text_obj_name, OBJPROP_HIDDEN, true);
+      }
+      
+      // Draw Call MDD (Breakeven) if settlement premium exists
+      if(rows[i].call_settle > 0.0)
+      {
+         double call_mdd = strike + rows[i].call_settle;
+         string mdd_call_name = obj_name + "_CMD";
+         if(ObjectCreate(0, mdd_call_name, OBJ_TREND, 0, time_start, call_mdd, time_end, call_mdd))
+         {
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_STYLE, STYLE_DOT); // Dotted line
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, mdd_call_name, OBJPROP_BACK, true);
+         }
+         
+         // Label for Call MDD
+         string mdd_call_txt = mdd_call_name + "_TXT";
+         if(ObjectCreate(0, mdd_call_txt, OBJ_TEXT, 0, time_start + 7200, call_mdd)) // Offset slightly to right
+         {
+            ObjectSetString(0, mdd_call_txt, OBJPROP_TEXT, "MDD");
+            ObjectSetInteger(0, mdd_call_txt, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, mdd_call_txt, OBJPROP_FONTSIZE, 8);
+            ObjectSetString(0, mdd_call_txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, mdd_call_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+            ObjectSetInteger(0, mdd_call_txt, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, mdd_call_txt, OBJPROP_HIDDEN, true);
+         }
+      }
+      
+      // Draw Put MDD (Breakeven) if settlement premium exists
+      if(rows[i].put_settle > 0.0)
+      {
+         double put_mdd = strike - rows[i].put_settle;
+         string mdd_put_name = obj_name + "_PMD";
+         if(ObjectCreate(0, mdd_put_name, OBJ_TREND, 0, time_start, put_mdd, time_end, put_mdd))
+         {
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_STYLE, STYLE_DOT); // Dotted line
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, mdd_put_name, OBJPROP_BACK, true);
+         }
+         
+         // Label for Put MDD
+         string mdd_put_txt = mdd_put_name + "_TXT";
+         if(ObjectCreate(0, mdd_put_txt, OBJ_TEXT, 0, time_start + 7200, put_mdd)) // Offset slightly to right
+         {
+            ObjectSetString(0, mdd_put_txt, OBJPROP_TEXT, "MDD");
+            ObjectSetInteger(0, mdd_put_txt, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, mdd_put_txt, OBJPROP_FONTSIZE, 8);
+            ObjectSetString(0, mdd_put_txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, mdd_put_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+            ObjectSetInteger(0, mdd_put_txt, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, mdd_put_txt, OBJPROP_HIDDEN, true);
+         }
       }
    }
 }
