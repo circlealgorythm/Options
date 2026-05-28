@@ -1,26 +1,26 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                           CME_GEX_Levels_EA.mq5  |
 //|                                  Copyright 2026, circlealgorythm |
 //|                                             https://github.com/  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, circlealgorythm"
 #property link      "https://github.com/circlealgorythm/Options"
-#property version   "1.00"
+#property version   "1.01"
 #property description "Expert Advisor to fetch CME GEX options levels from GitHub and plot them."
 
 //--- Inputs
 input group "--- GitHub Configuration ---"
 input string   InpGithubUser  = "circlealgorythm"; // GitHub Username
-input string   InpGithubRepo  = "Options";          // GitHub Repository Name
-input string   InpGithubToken = "";                 // GitHub PAT (leave empty if repo is public)
+input string   InpGithubRepo  = "Options";         // GitHub Repository Name
+input string   InpGithubToken = "";                // GitHub PAT (leave empty if repo is public)
 
 input group "--- Display Settings ---"
-input int      InpHistoryDays = 30;                 // Days of history to load
-input double   InpMinGexFilter = 1000.0;            // Minimum absolute GEX to display (filter noise)
-input color    InpColorCall   = clrMediumSeaGreen;  // Positive GEX Color (Support)
-input color    InpColorPut    = clrCrimson;         // Negative GEX Color (Resistance)
-input color    InpColorGamma  = clrDeepSkyBlue;      // Max Absolute Gamma Color
-input int      InpRefreshHours= 4;                  // Refresh rate in hours
+input int      InpHistoryDays = 30;                // Days of history to load
+input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
+input color    InpColorCall   = clrMediumSeaGreen; // Positive GEX Color (Support)
+input color    InpColorPut    = clrCrimson;        // Negative GEX Color (Resistance)
+input color    InpColorGamma  = clrDeepSkyBlue;    // Max Absolute Gamma Color
+input int      InpRefreshHours= 4;                 // Refresh rate in hours
 
 //--- Global Variables
 datetime       g_last_update = 0;
@@ -154,46 +154,66 @@ bool FetchAndParseDate(string date_str)
    }
    else
    {
-      Print("Error fetching data for ", date_str, ". Code: ", res, ", Error code: ", GetLastError());
+      int err = GetLastError();
+      if(err == 4014) // ERR_FUNCTION_NOT_ALLOWED
+         Print("WebRequest failed (4014). Allow URL 'https://raw.githubusercontent.com' in Tools -> Options -> Expert Advisors.");
+      else
+         PrintFormat("WebRequest error for %s. HTTP Code: %d, MT5 Error: %d", date_str, res, err);
+         
       return false;
    }
 }
 
 //+------------------------------------------------------------------+
+//| Struct for parsed rows                                           |
+//+------------------------------------------------------------------+
+struct OptionRow {
+   double strike;
+   double total_gex;
+   double total_abs_gamma;
+};
+
+//+------------------------------------------------------------------+
 //| Parse CSV contents and draw levels                               |
 //+------------------------------------------------------------------+
-void ParseCSV(string csv_data, string date_str)
+void ParseCSV(const string &csv_data, string date_str)
 {
+   // Strip carriage returns to ensure clean splitting
+   string clean_csv = csv_data;
+   StringReplace(clean_csv, "\r", "");
+   
    string lines[];
-   int total_lines = StringSplit(csv_data, '\n', lines);
+   int total_lines = StringSplit(clean_csv, '\n', lines);
    if(total_lines <= 1)
       return;
       
-   // First pass: find maximum absolute values for dynamic scaling of line thickness
    double max_abs_gex = 0.0;
-   
-   // Array representation for parsing
-   // Header: Currency,Strike,Total_GEX,Total_Abs_Gamma,Call_OI,Put_OI,Call_GEX,Put_GEX
-   struct OptionRow {
-      double strike;
-      double total_gex;
-      double total_abs_gamma;
-   };
+   double max_abs_gamma = 0.0;
+   double max_gamma_strike = 0.0;
    
    OptionRow rows[];
-   ArrayResize(rows, total_lines);
+   if(ArrayResize(rows, total_lines) == -1)
+   {
+      Print("Error: Failed to allocate memory for CSV parsing.");
+      return;
+   }
+   
    int valid_rows = 0;
    
+   // First pass: extract data and find maximums
    for(int i = 1; i < total_lines; i++)
    {
       string line = lines[i];
       StringTrimLeft(line);
       StringTrimRight(line);
+      
       if(StringLen(line) == 0)
          continue;
          
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
+      
+      // Expected minimum 4 columns: Currency,Strike,Total_GEX,Total_Abs_Gamma
       if(total_cols < 4)
          continue;
          
@@ -211,25 +231,22 @@ void ParseCSV(string csv_data, string date_str)
          if(abs_gex > max_abs_gex)
             max_abs_gex = abs_gex;
             
+         if(total_abs_gamma > max_abs_gamma)
+         {
+            max_abs_gamma = total_abs_gamma;
+            max_gamma_strike = strike;
+         }
+            
          valid_rows++;
       }
    }
    
-   // Calculate time bounds for the specific day
+   if(valid_rows == 0)
+      return;
+      
+   // Calculate time bounds for the specific day (strictly horizontal bounds)
    datetime time_start = StringToTime(date_str + " 00:00:00");
    datetime time_end = StringToTime(date_str + " 23:59:59");
-   
-   // Find overall maximum absolute gamma strike for the day
-   double max_abs_gamma = 0.0;
-   double max_gamma_strike = 0.0;
-   for(int i = 0; i < valid_rows; i++)
-   {
-      if(rows[i].total_abs_gamma > max_abs_gamma)
-      {
-         max_abs_gamma = rows[i].total_abs_gamma;
-         max_gamma_strike = rows[i].strike;
-      }
-   }
    
    // Second pass: Draw the levels
    for(int i = 0; i < valid_rows; i++)
@@ -244,26 +261,28 @@ void ParseCSV(string csv_data, string date_str)
       if(max_abs_gex > 0)
       {
          double ratio = MathAbs(gex) / max_abs_gex;
-         line_width = (int)MathRound(ratio * 3) + 1; // Maps [0, 1] to [1, 4]
+         line_width = 1 + (int)MathRound(ratio * 3.0); // Maps [0, 1] to [1, 4]
       }
       
-      // If this is the absolute maximum gamma level, highlight it with the Gamma color
+      // Highlight absolute maximum gamma level
       if(strike == max_gamma_strike && max_abs_gamma > 0)
       {
          line_color = InpColorGamma;
-         line_width = 4; // Thick line for absolute gamma max
+         line_width = 4;
       }
       
-      string obj_name = g_obj_prefix + g_base_currency + "_" + date_str + "_" + DoubleToString(strike, 4);
+      string obj_name = StringFormat("%s%s_%s_%.4f", g_obj_prefix, g_base_currency, date_str, strike);
       
       // Draw daily horizontal bounded trendline
       if(ObjectCreate(0, obj_name, OBJ_TREND, 0, time_start, strike, time_end, strike))
       {
          ObjectSetInteger(0, obj_name, OBJPROP_RAY_RIGHT, false);
+         ObjectSetInteger(0, obj_name, OBJPROP_RAY_LEFT, false); // Crucial for bounded line
          ObjectSetInteger(0, obj_name, OBJPROP_COLOR, line_color);
          ObjectSetInteger(0, obj_name, OBJPROP_WIDTH, line_width);
          ObjectSetInteger(0, obj_name, OBJPROP_STYLE, STYLE_SOLID);
          ObjectSetInteger(0, obj_name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true); // Keep object list clean
          ObjectSetInteger(0, obj_name, OBJPROP_BACK, true); // Behind candlesticks
          
          string tooltip = StringFormat("Date: %s | Strike: %.4f | GEX: %.0f | Abs Gamma: %.0f", 
@@ -274,7 +293,7 @@ void ParseCSV(string csv_data, string date_str)
 }
 
 //+------------------------------------------------------------------+
-//| Clean up all custom objects                                     |
+//| Clean up all custom objects                                      |
 //+------------------------------------------------------------------+
 void CleanUpObjects()
 {
