@@ -84,6 +84,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
             
         calculated_rows.append({
             "Strike": K,
+            "Expiry_Idx": row['Expiry_Idx'],
             "GEX": gex,
             "Abs_Gamma": abs_gamma,
             "Call_OI": call_oi,
@@ -94,35 +95,36 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         
     calc_df = pd.DataFrame(calculated_rows)
     
-    # Find settlement prices from the option maturity that has the maximum Open Interest (OI) per strike.
-    # We filter by Call and Put separately to avoid mixing types and getting zero settle values.
-    # We also require settle > 0.0 to filter out zero-premium rows from weekly/expired series or parser misses.
-    call_df = calc_df[(calc_df['Call_OI'] > 0) & (calc_df['Call_Settle'] > 0.0)]
-    if not call_df.empty:
-        idx_max_call = call_df.groupby('Strike')['Call_OI'].idxmax()
-        call_settle_series = call_df.loc[idx_max_call, ['Strike', 'Call_Settle']].set_index('Strike')['Call_Settle']
-    else:
-        # Fallback to absolute max if no positive OI rows have positive settle
-        call_settle_series = calc_df.groupby('Strike')['Call_Settle'].max()
+    def get_max_oi_settle(df, type_prefix):
+        oi_col = f'{type_prefix}_OI'
+        settle_col = f'{type_prefix}_Settle'
+        valid_df = df[(df[oi_col] > 0) & (df[settle_col] > 0.0)]
+        if not valid_df.empty:
+            idx_max = valid_df.groupby('Strike')[oi_col].idxmax()
+            return valid_df.loc[idx_max, ['Strike', settle_col, oi_col]].set_index('Strike')
+        return pd.DataFrame(columns=[settle_col, oi_col])
         
-    put_df = calc_df[(calc_df['Put_OI'] > 0) & (calc_df['Put_Settle'] > 0.0)]
-    if not put_df.empty:
-        idx_max_put = put_df.groupby('Strike')['Put_OI'].idxmax()
-        put_settle_series = put_df.loc[idx_max_put, ['Strike', 'Put_Settle']].set_index('Strike')['Put_Settle']
-    else:
-        # Fallback to absolute max if no positive OI rows have positive settle
-        put_settle_series = calc_df.groupby('Strike')['Put_Settle'].max()
+    daily_df = calc_df[calc_df['Expiry_Idx'] == 0]
+    global_df = calc_df[calc_df['Expiry_Idx'] > 0]
+    
+    daily_call = get_max_oi_settle(daily_df, 'Call').rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
+    daily_put = get_max_oi_settle(daily_df, 'Put').rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
+    
+    global_call = get_max_oi_settle(global_df, 'Call').rename(columns={'Call_OI': 'Global_Call_OI', 'Call_Settle': 'Global_Call_Settle'})
+    global_put = get_max_oi_settle(global_df, 'Put').rename(columns={'Put_OI': 'Global_Put_OI', 'Put_Settle': 'Global_Put_Settle'})
     
     # Group by Strike and sum values across all expirations/series
     summary = calc_df.groupby('Strike').agg({
         'GEX': 'sum',
-        'Abs_Gamma': 'sum',
-        'Call_OI': 'sum',
-        'Put_OI': 'sum'
+        'Abs_Gamma': 'sum'
     }).reset_index()
     
-    summary['Call_Settle'] = summary['Strike'].map(call_settle_series).fillna(0.0)
-    summary['Put_Settle'] = summary['Strike'].map(put_settle_series).fillna(0.0)
+    summary = summary.merge(daily_call, on='Strike', how='left')
+    summary = summary.merge(daily_put, on='Strike', how='left')
+    summary = summary.merge(global_call, on='Strike', how='left')
+    summary = summary.merge(global_put, on='Strike', how='left')
+    
+    summary.fillna(0.0, inplace=True)
     
     summary.rename(columns={'GEX': 'Total_GEX', 'Abs_Gamma': 'Total_Abs_Gamma'}, inplace=True)
     summary.insert(0, 'Currency', currency)

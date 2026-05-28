@@ -301,10 +301,14 @@ struct OptionRow {
    double strike;
    double total_gex;
    double total_abs_gamma;
-   double call_oi;
-   double put_oi;
-   double call_settle;
-   double put_settle;
+   double daily_call_settle;
+   double daily_call_oi;
+   double daily_put_settle;
+   double daily_put_oi;
+   double global_call_settle;
+   double global_call_oi;
+   double global_put_settle;
+   double global_put_oi;
 };
 
 //+------------------------------------------------------------------+
@@ -340,10 +344,15 @@ void ParseCSV(const string &csv_data, string date_str)
    double max_abs_gamma = 0.0;
    double max_gamma_strike = 0.0;
    
-   double max_call_oi = -1.0;
-   double max_call_oi_strike = 0.0;
-   double max_put_oi = -1.0;
-   double max_put_oi_strike = 0.0;
+   double max_daily_call_oi = -1.0;
+   double max_daily_call_oi_strike = 0.0;
+   double max_daily_put_oi = -1.0;
+   double max_daily_put_oi_strike = 0.0;
+   
+   double max_global_call_oi = -1.0;
+   double max_global_call_oi_strike = 0.0;
+   double max_global_put_oi = -1.0;
+   double max_global_put_oi_strike = 0.0;
    
    double r68_high = 0.0;
    double r68_low = 0.0;
@@ -372,26 +381,31 @@ void ParseCSV(const string &csv_data, string date_str)
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
       
-      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Call_OI,Put_OI,Call_Settle,Put_Settle,R68_High,R68_Low,R95_High,R95_Low
-      if(total_cols < 4)
+      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low
+      if(total_cols < 12)
          continue;
          
       double strike = StringToDouble(columns[1]);
       double total_gex = StringToDouble(columns[2]);
       double total_abs_gamma = StringToDouble(columns[3]);
       
-      double call_oi = (total_cols >= 5) ? StringToDouble(columns[4]) : 0.0;
-      double put_oi = (total_cols >= 6) ? StringToDouble(columns[5]) : 0.0;
-      double call_settle = (total_cols >= 7) ? StringToDouble(columns[6]) : 0.0;
-      double put_settle = (total_cols >= 8) ? StringToDouble(columns[7]) : 0.0;
+      double d_call_settle = StringToDouble(columns[4]);
+      double d_call_oi = StringToDouble(columns[5]);
+      double d_put_settle = StringToDouble(columns[6]);
+      double d_put_oi = StringToDouble(columns[7]);
+      
+      double g_call_settle = StringToDouble(columns[8]);
+      double g_call_oi = StringToDouble(columns[9]);
+      double g_put_settle = StringToDouble(columns[10]);
+      double g_put_oi = StringToDouble(columns[11]);
       
       // Read volatility zones from the first matching row
-      if(total_cols >= 12 && r68_high == 0.0)
+      if(total_cols >= 16 && r68_high == 0.0)
       {
-         r68_high = StringToDouble(columns[8]);
-         r68_low = StringToDouble(columns[9]);
-         r95_high = StringToDouble(columns[10]);
-         r95_low = StringToDouble(columns[11]);
+         r68_high = StringToDouble(columns[12]);
+         r68_low = StringToDouble(columns[13]);
+         r95_high = StringToDouble(columns[14]);
+         r95_low = StringToDouble(columns[15]);
       }
       
       if(MathAbs(total_gex) >= InpMinGexFilter)
@@ -399,10 +413,14 @@ void ParseCSV(const string &csv_data, string date_str)
          rows[valid_rows].strike = strike;
          rows[valid_rows].total_gex = total_gex;
          rows[valid_rows].total_abs_gamma = total_abs_gamma;
-         rows[valid_rows].call_oi = call_oi;
-         rows[valid_rows].put_oi = put_oi;
-         rows[valid_rows].call_settle = call_settle;
-         rows[valid_rows].put_settle = put_settle;
+         rows[valid_rows].daily_call_settle = d_call_settle;
+         rows[valid_rows].daily_call_oi = d_call_oi;
+         rows[valid_rows].daily_put_settle = d_put_settle;
+         rows[valid_rows].daily_put_oi = d_put_oi;
+         rows[valid_rows].global_call_settle = g_call_settle;
+         rows[valid_rows].global_call_oi = g_call_oi;
+         rows[valid_rows].global_put_settle = g_put_settle;
+         rows[valid_rows].global_put_oi = g_put_oi;
          
          double abs_gex = MathAbs(total_gex);
          if(abs_gex > max_abs_gex)
@@ -414,16 +432,28 @@ void ParseCSV(const string &csv_data, string date_str)
             max_gamma_strike = strike;
          }
          
-         if(call_oi > max_call_oi)
+         if(d_call_oi > max_daily_call_oi)
          {
-            max_call_oi = call_oi;
-            max_call_oi_strike = strike;
+            max_daily_call_oi = d_call_oi;
+            max_daily_call_oi_strike = strike;
          }
          
-         if(put_oi > max_put_oi)
+         if(d_put_oi > max_daily_put_oi)
          {
-            max_put_oi = put_oi;
-            max_put_oi_strike = strike;
+            max_daily_put_oi = d_put_oi;
+            max_daily_put_oi_strike = strike;
+         }
+         
+         if(g_call_oi > max_global_call_oi)
+         {
+            max_global_call_oi = g_call_oi;
+            max_global_call_oi_strike = strike;
+         }
+         
+         if(g_put_oi > max_global_put_oi)
+         {
+            max_global_put_oi = g_put_oi;
+            max_global_put_oi_strike = strike;
          }
             
          valid_rows++;
@@ -497,19 +527,33 @@ void ParseCSV(const string &csv_data, string date_str)
       
       string type_prefix = "";
       
-      // Primary CALL Market Boundary (1st Order)
-      if(strike == max_call_oi_strike && max_call_oi > 0)
+      // Global CALL Market Boundary (1st Order)
+      if(strike == max_global_call_oi_strike && max_global_call_oi > 0)
       {
          line_color = InpColorCallMarket;
          line_width = InpWidthMarket;
-         type_prefix = "[MARKET CALL] ";
+         type_prefix = "[GLOB CALL] ";
       }
-      // Primary PUT Market Boundary (1st Order)
-      else if(strike == max_put_oi_strike && max_put_oi > 0)
+      // Global PUT Market Boundary (1st Order)
+      else if(strike == max_global_put_oi_strike && max_global_put_oi > 0)
       {
          line_color = InpColorPutMarket;
          line_width = InpWidthMarket;
-         type_prefix = "[MARKET PUT] ";
+         type_prefix = "[GLOB PUT] ";
+      }
+      // Daily CALL Market Boundary
+      else if(strike == max_daily_call_oi_strike && max_daily_call_oi > 0)
+      {
+         line_color = InpColorCallMarket;
+         line_width = 2;
+         type_prefix = "[DLY CALL] ";
+      }
+      // Daily PUT Market Boundary
+      else if(strike == max_daily_put_oi_strike && max_daily_put_oi > 0)
+      {
+         line_color = InpColorPutMarket;
+         line_width = 2;
+         type_prefix = "[DLY PUT] ";
       }
       // Highlight absolute maximum gamma level if it's not a market boundary
       else if(strike == max_gamma_strike && max_abs_gamma > 0)
@@ -534,8 +578,8 @@ void ParseCSV(const string &csv_data, string date_str)
          ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true);
          ObjectSetInteger(0, obj_name, OBJPROP_BACK, true);
          
-         string tooltip = StringFormat("Date: %s | Strike: %.4f | Chart Price: %.5f | GEX: %.0f | Abs Gamma: %.0f | Call OI: %.0f | Put OI: %.0f", 
-                                       date_str, strike, chart_price, gex, ag, rows[i].call_oi, rows[i].put_oi);
+         string tooltip = StringFormat("Date: %s | Strike: %.4f | Chart Price: %.5f | GEX: %.0f | Abs Gamma: %.0f | D_Call_OI: %.0f | D_Put_OI: %.0f | G_Call_OI: %.0f | G_Put_OI: %.0f", 
+                                       date_str, strike, chart_price, gex, ag, rows[i].daily_call_oi, rows[i].daily_put_oi, rows[i].global_call_oi, rows[i].global_put_oi);
          ObjectSetString(0, obj_name, OBJPROP_TOOLTIP, tooltip);
       }
       
@@ -590,79 +634,131 @@ void ParseCSV(const string &csv_data, string date_str)
          ObjectSetInteger(0, strike_txt_name, OBJPROP_HIDDEN, true);
       }
       
-      // Draw Call MDD (Breakeven) only for the primary Call strike (1st Order)
-      if(strike == max_call_oi_strike && rows[i].call_settle > 0.0)
+      // Daily Call MDD
+      if(strike == max_daily_call_oi_strike && rows[i].daily_call_settle > 0.0)
       {
-         double call_settle = rows[i].call_settle;
-         if(g_base_currency == "GBP" && call_settle > 1.0)
-            call_settle = call_settle / 100.0;
+         double settle = rows[i].daily_call_settle;
+         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
+         double mdd = chart_price + settle;
+         string name = obj_name + "_DCMD";
+         ObjectDelete(0, name);
+         if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
+         {
+            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Daily Call MDD Premium: %.4f", settle));
             
-         double call_mdd = chart_price + call_settle;
-         string mdd_call_name = obj_name + "_CMD";
-         ObjectDelete(0, mdd_call_name);
-         if(ObjectCreate(0, mdd_call_name, OBJ_TREND, 0, time_start, call_mdd, time_end, call_mdd))
-         {
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_RAY_RIGHT, false);
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_RAY_LEFT, false);
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_COLOR, InpColorMDDCall);
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_WIDTH, 1);
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_STYLE, STYLE_DOT); // Dotted line
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, mdd_call_name, OBJPROP_BACK, true);
-            ObjectSetString(0, mdd_call_name, OBJPROP_TOOLTIP, StringFormat("Call MDD Premium: %.4f", call_settle));
-         }
-         
-         // Label for Call MDD
-         string mdd_call_txt = mdd_call_name + "_TXT";
-         ObjectDelete(0, mdd_call_txt);
-         if(ObjectCreate(0, mdd_call_txt, OBJ_TEXT, 0, time_start + 7200, call_mdd)) // Offset slightly to right
-         {
-            ObjectSetString(0, mdd_call_txt, OBJPROP_TEXT, "MDD");
-            ObjectSetInteger(0, mdd_call_txt, OBJPROP_COLOR, InpColorMDDCall);
-            ObjectSetInteger(0, mdd_call_txt, OBJPROP_FONTSIZE, 8);
-            ObjectSetString(0, mdd_call_txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, mdd_call_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
-            ObjectSetInteger(0, mdd_call_txt, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, mdd_call_txt, OBJPROP_HIDDEN, true);
+            string txt = name + "_TXT";
+            ObjectDelete(0, txt);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "D_MDD");
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
+            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
       }
       
-      // Draw Put MDD (Breakeven) only for the primary Put strike (1st Order)
-      if(strike == max_put_oi_strike && rows[i].put_settle > 0.0)
+      // Global Call MDD
+      if(strike == max_global_call_oi_strike && rows[i].global_call_settle > 0.0)
       {
-         double put_settle = rows[i].put_settle;
-         if(g_base_currency == "GBP" && put_settle > 1.0)
-            put_settle = put_settle / 100.0;
+         double settle = rows[i].global_call_settle;
+         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
+         double mdd = chart_price + settle;
+         string name = obj_name + "_GCMD";
+         ObjectDelete(0, name);
+         if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
+         {
+            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Global Call MDD Premium: %.4f", settle));
             
-         double put_mdd = chart_price - put_settle;
-         string mdd_put_name = obj_name + "_PMD";
-         ObjectDelete(0, mdd_put_name);
-         if(ObjectCreate(0, mdd_put_name, OBJ_TREND, 0, time_start, put_mdd, time_end, put_mdd))
-         {
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_RAY_RIGHT, false);
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_RAY_LEFT, false);
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_COLOR, InpColorMDDPut);
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_WIDTH, 1);
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_STYLE, STYLE_DOT); // Dotted line
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, mdd_put_name, OBJPROP_BACK, true);
-            ObjectSetString(0, mdd_put_name, OBJPROP_TOOLTIP, StringFormat("Put MDD Premium: %.4f", put_settle));
+            string txt = name + "_TXT";
+            ObjectDelete(0, txt);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "G_MDD");
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
+            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
-         
-         // Label for Put MDD
-         string mdd_put_txt = mdd_put_name + "_TXT";
-         ObjectDelete(0, mdd_put_txt);
-         if(ObjectCreate(0, mdd_put_txt, OBJ_TEXT, 0, time_start + 7200, put_mdd)) // Offset slightly to right
+      }
+
+      // Daily Put MDD
+      if(strike == max_daily_put_oi_strike && rows[i].daily_put_settle > 0.0)
+      {
+         double settle = rows[i].daily_put_settle;
+         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
+         double mdd = chart_price - settle;
+         string name = obj_name + "_DPMD";
+         ObjectDelete(0, name);
+         if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
          {
-            ObjectSetString(0, mdd_put_txt, OBJPROP_TEXT, "MDD");
-            ObjectSetInteger(0, mdd_put_txt, OBJPROP_COLOR, InpColorMDDPut);
-            ObjectSetInteger(0, mdd_put_txt, OBJPROP_FONTSIZE, 8);
-            ObjectSetString(0, mdd_put_txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, mdd_put_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
-            ObjectSetInteger(0, mdd_put_txt, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, mdd_put_txt, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Daily Put MDD Premium: %.4f", settle));
+            
+            string txt = name + "_TXT";
+            ObjectDelete(0, txt);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "D_MDD");
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
+            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
+         }
+      }
+      
+      // Global Put MDD
+      if(strike == max_global_put_oi_strike && rows[i].global_put_settle > 0.0)
+      {
+         double settle = rows[i].global_put_settle;
+         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
+         double mdd = chart_price - settle;
+         string name = obj_name + "_GPMD";
+         ObjectDelete(0, name);
+         if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
+         {
+            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Global Put MDD Premium: %.4f", settle));
+            
+            string txt = name + "_TXT";
+            ObjectDelete(0, txt);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "G_MDD");
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
+            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
       }
    }
