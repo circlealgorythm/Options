@@ -104,6 +104,7 @@ def calculate_gex_levels(df, currency, output_dir):
         abs_gamma_put = calculate_absolute_gamma(gamma_put, row['Put_OI'])
         
         results.append({
+            "Currency": currency,
             "Strike": K,
             "Total_GEX": gex_call + gex_put,
             "Total_Abs_Gamma": abs_gamma_call + abs_gamma_put,
