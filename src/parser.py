@@ -2,111 +2,104 @@ import os
 import re
 import pandas as pd
 import pdfplumber
-from playwright.sync_api import sync_playwright
+from curl_cffi import requests
 
-def download_cme_bulletin(url: str, dest_path: str):
+def download_cme_bulletin(url_or_section: str, dest_path: str):
     """
-    Downloads the CME daily bulletin using Playwright to bypass basic anti-bot protections.
+    Downloads a CME daily bulletin section using curl_cffi to bypass Akamai WAF.
     """
-    print(f"Downloading {url} to {dest_path}...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        # We use a standard user agent
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
-        
-        try:
-            # We navigate to the PDF URL
-            # For PDF downloads, Playwright can sometimes handle them if we wait for download event
-            # Or we can just try to fetch the bytes if it displays in browser
-            response = page.goto(url, wait_until="networkidle")
-            if response is None or response.status != 200:
-                print(f"Failed to fetch {url}. Status: {response.status if response else 'Unknown'}")
-                return False
-                
-            # Usually for direct PDFs, playwright's page.goto just downloads it or renders it.
-            # We'll use requests through the page context to get the raw bytes
-            client = page.context.new_cdp_session(page)
-            cookies = page.context.cookies()
-            cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-            
-            # Use requests with the same cookies and user-agent to download the actual PDF
-            import requests
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-                "Cookie": cookie_str,
-                "Referer": "https://www.cmegroup.com/"
-            }
-            res = requests.get(url, headers=headers, stream=True)
-            if res.status_code == 200:
-                with open(dest_path, 'wb') as f:
-                    for chunk in res.iter_content(1024):
-                        f.write(chunk)
-                return True
-            else:
-                print(f"Requests failed with status {res.status_code}")
-                return False
-        except Exception as e:
-            print(f"Error downloading PDF: {e}")
+    section_name = url_or_section.split('/')[-1]
+    url = f"https://www.cmegroup.com/daily_bulletin/current/{section_name}"
+    
+    print(f"Downloading {url} to {dest_path} using curl_cffi...")
+    try:
+        response = requests.get(url, impersonate="chrome120", timeout=20)
+        if response.status_code == 200:
+            with open(dest_path, 'wb') as f:
+                f.write(response.content)
+            print(f"Successfully downloaded {section_name} ({len(response.content)} bytes)")
+            return True
+        else:
+            print(f"Failed to download {section_name}. Status: {response.status_code}")
             return False
-        finally:
-            browser.close()
+    except Exception as e:
+        print(f"Error downloading {section_name}: {e}")
+        return False
 
-def parse_cme_pdf(pdf_path: str, currency_filter=None):
+def clean_value(val):
+    if not val or val == "----" or val == "CAB":
+        return 0.0
+    cleaned = re.sub(r'[BA\+\-\*]', '', val).strip()
+    try:
+        return float(cleaned)
+    except:
+        return 0.0
+
+def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
     """
-    Parses the CME Currency Options PDF using pdfplumber.
-    Extracts Strike, Premium, and Open Interest.
-    Returns a DataFrame.
+    Parses a CME Daily Bulletin PDF for a specific currency option data.
+    is_call_only: True if processing Call options only, False for Put only, None for mixed (EUR).
     """
-    if currency_filter is None:
-        currency_filter = ['EUR', 'GBP']
-        
     data = []
     
-    # This is a generalized parsing logic meant to be adapted to the exact CME layout.
-    # The actual CME Daily Bulletin table has columns for Calls and Puts, Strikes, and Vol/OI.
-    
+    if not os.path.exists(pdf_path):
+        print(f"Error: PDF path {pdf_path} does not exist.")
+        return pd.DataFrame()
+        
     with pdfplumber.open(pdf_path) as pdf:
-        current_currency = None
         for page in pdf.pages:
             text = page.extract_text()
             if not text:
                 continue
                 
-            # Simple heuristic to find currency sections
-            if "EURO FX" in text.upper():
-                current_currency = "EUR"
-            elif "BRITISH POUND" in text.upper():
-                current_currency = "GBP"
-                
-            if current_currency not in currency_filter:
-                continue
-                
-            # Attempt to extract table data
-            # Typically lines look like: 
-            # Strike  Call-Sett  Put-Sett  Call-Vol  Put-Vol  Call-OI  Put-OI
             lines = text.split('\n')
             for line in lines:
-                # Look for a line that starts with a strike price (e.g., 10500, 11000)
-                # This is a highly simplified regex for demonstration
-                match = re.match(r'^(\d{4,5})\s+([0-9.]+)\s+([0-9.]+)\s+\d+\s+\d+\s+(\d+)\s+(\d+)', line.strip())
-                if match:
-                    strike = float(match.group(1)) / 10000.0  # e.g., 11000 -> 1.1000
-                    call_settle = float(match.group(2))
-                    put_settle = float(match.group(3))
-                    call_oi = int(match.group(4))
-                    put_oi = int(match.group(5))
+                parts = line.split()
+                if not parts or not parts[0].isdigit():
+                    continue
+                if len(parts) < 8:
+                    continue
                     
-                    data.append({
-                        "Currency": current_currency,
-                        "Strike": strike,
-                        "Call_Settle": call_settle,
-                        "Put_Settle": put_settle,
-                        "Call_OI": call_oi,
-                        "Put_OI": put_oi
-                    })
+                strike_raw = parts[0]
+                strike = float(strike_raw)
+                if currency == 'EUR':
+                    strike /= 10000.0
+                else:
+                    strike /= 1000.0
                     
-    df = pd.DataFrame(data)
-    return df
+                # Find Delta index
+                delta_idx = -1
+                for idx, part in enumerate(parts):
+                    if re.match(r'^\.?\d{3}$', part) or re.match(r'^0\.\d{3}$', part):
+                        delta_idx = idx
+                        break
+                if delta_idx == -1:
+                    continue
+                    
+                delta = clean_value(parts[delta_idx])
+                
+                # Find Settle index (scanning left from delta)
+                settle = 0.0
+                for idx in range(delta_idx - 1, 0, -1):
+                    part = parts[idx]
+                    if '.' in part or part in ['CAB', '----'] or ('-' in part and len(part) > 1 and '.' in part) or ('+' in part and len(part) > 1 and '.' in part):
+                        settle = clean_value(part)
+                        break
+                        
+                # Find Open Interest index (scanning right from delta)
+                oi = 0
+                for idx in range(delta_idx + 1, len(parts)):
+                    part = parts[idx]
+                    cleaned = re.sub(r'[A-Z\+\-\*]', '', part).strip()
+                    if cleaned.isdigit() and len(cleaned) > 0:
+                        oi = int(cleaned)
+                        
+                data.append({
+                    "Strike": strike,
+                    "Settle": settle,
+                    "Delta": delta,
+                    "OI": oi,
+                    "Is_Call": is_call_only
+                })
+                
+    return pd.DataFrame(data)
