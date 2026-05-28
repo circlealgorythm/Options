@@ -26,7 +26,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         raw_df = raw_df.reset_index(drop=True)
         atm_idx = (raw_df['Strike'] - spot).abs().idxmin()
         atm_row = raw_df.loc[atm_idx]
-        price_atm = atm_row['Settle'] / 10000.0 if currency == 'EUR' else atm_row['Settle']
+        price_atm = atm_row['Settle'] / 100.0
         is_call_val = atm_row['Is_Call']
         if isinstance(is_call_val, pd.Series):
             is_call_val = is_call_val.iloc[0]
@@ -61,7 +61,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
                 is_call = (row['Delta'] < 0.5)
                 
         # Calculate Greeks & GEX
-        price = row['Settle'] / 10000.0 if currency == 'EUR' else row['Settle']
+        price = row['Settle'] / 100.0
         
         if is_call:
             iv = implied_volatility(price, spot, K, T, r, 'C')
