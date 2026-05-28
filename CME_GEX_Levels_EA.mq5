@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, circlealgorythm"
 #property link      "https://github.com/circlealgorythm/Options"
-#property version   "1.04"
+#property version   "1.05"
 #property description "Expert Advisor to fetch CME GEX options levels and plot premium boundaries, MDD, AG, and volatility zones."
 
 //--- Inputs
@@ -17,6 +17,8 @@ input string   InpGithubToken = "";                // GitHub PAT (leave empty if
 input group "--- Display Settings ---"
 input int      InpHistoryDays = 30;                // Days of history to load
 input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
+input int      InpBaseLineWidth = 1;               // Base Line Width
+input int      InpForwardPoints = 0;               // Forward Point (in points)
 input color    InpColorCall   = clrMediumSeaGreen; // Positive GEX Color (Support)
 input color    InpColorPut    = clrCrimson;        // Negative GEX Color (Resistance)
 input color    InpColorGamma  = clrDeepSkyBlue;    // Max Absolute Gamma Color
@@ -43,6 +45,8 @@ input color    InpColorR95    = C'240,255,245';    // R95 Zone Color (95% probab
 datetime       g_last_update = 0;
 string         g_base_currency = "";
 string         g_obj_prefix = "CMEGEX_";
+bool           g_show_gex = true;
+bool           g_show_ag  = true;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -62,6 +66,7 @@ int OnInit()
 
    Print("CME GEX EA initialized for ", g_base_currency, "USD. Loading historical levels...");
    
+   CreateButtons();
    EventSetTimer(3600); // Trigger timer event every hour
    
    UpdateLevels();
@@ -75,8 +80,96 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   DeleteButtons();
    CleanUpObjects();
    Print("CME GEX EA deinitialized and objects cleaned up.");
+}
+
+//+------------------------------------------------------------------+
+//| UI Buttons Creation                                              |
+//+------------------------------------------------------------------+
+void CreateButtons()
+{
+   ObjectCreate(0, "Btn_ShowGEX", OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XDISTANCE, 10);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YDISTANCE, 20);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XSIZE, 100);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YSIZE, 25);
+   ObjectSetString(0, "Btn_ShowGEX", OBJPROP_TEXT, "Hide GEX");
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_HIDDEN, true);
+   
+   ObjectCreate(0, "Btn_ShowAG", OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XDISTANCE, 120);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YDISTANCE, 20);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XSIZE, 100);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YSIZE, 25);
+   ObjectSetString(0, "Btn_ShowAG", OBJPROP_TEXT, "Hide AG");
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_HIDDEN, true);
+   
+   ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| UI Buttons Deletion                                              |
+//+------------------------------------------------------------------+
+void DeleteButtons()
+{
+   ObjectDelete(0, "Btn_ShowGEX");
+   ObjectDelete(0, "Btn_ShowAG");
+}
+
+//+------------------------------------------------------------------+
+//| Visibility Toggling                                              |
+//+------------------------------------------------------------------+
+void UpdateVisibility()
+{
+   int total_objects = ObjectsTotal(0);
+   for(int i = 0; i < total_objects; i++)
+   {
+      string name = ObjectName(0, i);
+      if(StringSubstr(name, 0, StringLen(g_obj_prefix)) == g_obj_prefix)
+      {
+         bool is_ag = (StringFind(name, "_AGL") >= 0);
+         bool is_mdd_r_zones = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0 || StringFind(name, "_CMD") >= 0 || StringFind(name, "_PMD") >= 0);
+         
+         if(is_ag)
+         {
+            ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, g_show_ag ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
+         }
+         else if(!is_mdd_r_zones)
+         {
+            // Apply to all other GEX lines and text labels
+            ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, g_show_gex ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
+         }
+      }
+   }
+   ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| Chart Event Handler                                              |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id == CHARTEVENT_OBJECT_CLICK)
+   {
+      if(sparam == "Btn_ShowGEX")
+      {
+         g_show_gex = !g_show_gex;
+         ObjectSetString(0, "Btn_ShowGEX", OBJPROP_TEXT, g_show_gex ? "Hide GEX" : "Show GEX");
+         UpdateVisibility();
+         ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_STATE, false); // Reset button state
+      }
+      else if(sparam == "Btn_ShowAG")
+      {
+         g_show_ag = !g_show_ag;
+         ObjectSetString(0, "Btn_ShowAG", OBJPROP_TEXT, g_show_ag ? "Hide AG" : "Show AG");
+         UpdateVisibility();
+         ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_STATE, false); // Reset button state
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -128,6 +221,7 @@ void UpdateLevels()
       }
    }
    
+   UpdateVisibility();
    ChartRedraw(0);
    Print("Levels update completed. Successfully loaded data for ", success_count, " days.");
 }
@@ -342,12 +436,19 @@ void ParseCSV(const string &csv_data, string date_str)
    datetime time_start = StringToTime(date_str + " 00:00:00");
    datetime time_end = StringToTime(date_str + " 23:59:59");
    
+   double fw_offset = InpForwardPoints * Point();
+   
    // Draw volatility zones first (so they are in the background)
    if(InpDrawZones && r68_high > 0.0 && r68_low > 0.0)
    {
+      double chart_r95_high = r95_high + fw_offset;
+      double chart_r95_low = r95_low + fw_offset;
+      double chart_r68_high = r68_high + fw_offset;
+      double chart_r68_low = r68_low + fw_offset;
+      
       string r95_name = StringFormat("%s%s_%s_R95", g_obj_prefix, g_base_currency, date_str);
       ObjectDelete(0, r95_name);
-      if(ObjectCreate(0, r95_name, OBJ_RECTANGLE, 0, time_start, r95_high, time_end, r95_low))
+      if(ObjectCreate(0, r95_name, OBJ_RECTANGLE, 0, time_start, chart_r95_high, time_end, chart_r95_low))
       {
          ObjectSetInteger(0, r95_name, OBJPROP_COLOR, InpColorR95);
          ObjectSetInteger(0, r95_name, OBJPROP_FILL, true);
@@ -359,7 +460,7 @@ void ParseCSV(const string &csv_data, string date_str)
       
       string r68_name = StringFormat("%s%s_%s_R68", g_obj_prefix, g_base_currency, date_str);
       ObjectDelete(0, r68_name);
-      if(ObjectCreate(0, r68_name, OBJ_RECTANGLE, 0, time_start, r68_high, time_end, r68_low))
+      if(ObjectCreate(0, r68_name, OBJ_RECTANGLE, 0, time_start, chart_r68_high, time_end, chart_r68_low))
       {
          ObjectSetInteger(0, r68_name, OBJPROP_COLOR, InpColorR68);
          ObjectSetInteger(0, r68_name, OBJPROP_FILL, true);
@@ -377,15 +478,22 @@ void ParseCSV(const string &csv_data, string date_str)
       double gex = rows[i].total_gex;
       double ag = rows[i].total_abs_gamma;
       
+      double chart_price = strike + fw_offset;
+      
       color line_color = (gex >= 0) ? InpColorCall : InpColorPut;
-      int line_width = 1;
+      int line_width = InpBaseLineWidth;
       int line_style = STYLE_SOLID;
+      
+      double gex_ratio = (max_abs_gex > 0) ? (MathAbs(gex) / max_abs_gex) : 1.0;
+      double ag_ratio = (max_abs_gamma > 0) ? (ag / max_abs_gamma) : 1.0;
       
       if(max_abs_gex > 0)
       {
-         double ratio = MathAbs(gex) / max_abs_gex;
-         line_width = 1 + (int)MathRound(ratio * 3.0); // Maps [0, 1] to [1, 4]
+         line_width = InpBaseLineWidth + (int)MathRound(gex_ratio * 3.0); // Maps [0, 1] width offset
       }
+      
+      datetime gex_line_end = time_start + (int)((time_end - time_start) * MathMax(0.1, gex_ratio));
+      datetime ag_line_end = time_start + (int)((time_end - time_start) * MathMax(0.1, ag_ratio));
       
       string type_prefix = "";
       
@@ -415,7 +523,7 @@ void ParseCSV(const string &csv_data, string date_str)
       
       // Draw horizontal bounded trendline for GEX Wall
       ObjectDelete(0, obj_name);
-      if(ObjectCreate(0, obj_name, OBJ_TREND, 0, time_start, strike, time_end, strike))
+      if(ObjectCreate(0, obj_name, OBJ_TREND, 0, time_start, chart_price, gex_line_end, chart_price))
       {
          ObjectSetInteger(0, obj_name, OBJPROP_RAY_RIGHT, false);
          ObjectSetInteger(0, obj_name, OBJPROP_RAY_LEFT, false);
@@ -426,16 +534,16 @@ void ParseCSV(const string &csv_data, string date_str)
          ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true);
          ObjectSetInteger(0, obj_name, OBJPROP_BACK, true);
          
-         string tooltip = StringFormat("Date: %s | Strike: %.4f | GEX: %.0f | Abs Gamma: %.0f | Call OI: %.0f | Put OI: %.0f", 
-                                       date_str, strike, gex, ag, rows[i].call_oi, rows[i].put_oi);
+         string tooltip = StringFormat("Date: %s | Strike: %.4f | Chart Price: %.5f | GEX: %.0f | Abs Gamma: %.0f | Call OI: %.0f | Put OI: %.0f", 
+                                       date_str, strike, chart_price, gex, ag, rows[i].call_oi, rows[i].put_oi);
          ObjectSetString(0, obj_name, OBJPROP_TOOLTIP, tooltip);
       }
       
       // Draw horizontal bounded trendline for Absolute Gamma (AG) with a micro-offset below the GEX line
-      double ag_strike = strike - 2.0 * Point();
+      double ag_chart_price = chart_price - 2.0 * Point();
       string ag_line_name = obj_name + "_AGL";
       ObjectDelete(0, ag_line_name);
-      if(ObjectCreate(0, ag_line_name, OBJ_TREND, 0, time_start, ag_strike, time_end, ag_strike))
+      if(ObjectCreate(0, ag_line_name, OBJ_TREND, 0, time_start, ag_chart_price, ag_line_end, ag_chart_price))
       {
          ObjectSetInteger(0, ag_line_name, OBJPROP_RAY_RIGHT, false);
          ObjectSetInteger(0, ag_line_name, OBJPROP_RAY_LEFT, false);
@@ -448,13 +556,13 @@ void ParseCSV(const string &csv_data, string date_str)
       }
       
       // Calculate percentages for labels
-      int gex_pct = (max_abs_gex > 0) ? (int)MathRound((MathAbs(gex) / max_abs_gex) * 100.0) : 0;
-      int ag_pct = (max_abs_gamma > 0) ? (int)MathRound((ag / max_abs_gamma) * 100.0) : 0;
+      int gex_pct = (int)MathRound(gex_ratio * 100.0);
+      int ag_pct = (int)MathRound(ag_ratio * 100.0);
       
       // Draw text label on the left side of the level (slightly offset to the right by 1 hour / 3600 seconds)
       string text_obj_name = obj_name + "_TXT";
       ObjectDelete(0, text_obj_name);
-      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, time_start + 3600, strike))
+      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, time_start + 3600, chart_price))
       {
          string sign = (gex >= 0) ? "+" : "";
          string text_val = StringFormat("%sGEX %s%s (%d%%) | AG %s (%d%%)", 
@@ -468,6 +576,20 @@ void ParseCSV(const string &csv_data, string date_str)
          ObjectSetInteger(0, text_obj_name, OBJPROP_HIDDEN, true);
       }
       
+      // Gray futures original price text label
+      string strike_txt_name = obj_name + "_FUT";
+      ObjectDelete(0, strike_txt_name);
+      if(ObjectCreate(0, strike_txt_name, OBJ_TEXT, 0, time_start + 7200, chart_price))
+      {
+         ObjectSetString(0, strike_txt_name, OBJPROP_TEXT, StringFormat("%.4f", strike));
+         ObjectSetInteger(0, strike_txt_name, OBJPROP_COLOR, clrGray);
+         ObjectSetInteger(0, strike_txt_name, OBJPROP_FONTSIZE, 8);
+         ObjectSetString(0, strike_txt_name, OBJPROP_FONT, "Consolas");
+         ObjectSetInteger(0, strike_txt_name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+         ObjectSetInteger(0, strike_txt_name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, strike_txt_name, OBJPROP_HIDDEN, true);
+      }
+      
       // Draw Call MDD (Breakeven) only for the primary Call strike (1st Order)
       if(strike == max_call_oi_strike && rows[i].call_settle > 0.0)
       {
@@ -475,7 +597,7 @@ void ParseCSV(const string &csv_data, string date_str)
          if(g_base_currency == "GBP" && call_settle > 1.0)
             call_settle = call_settle / 100.0;
             
-         double call_mdd = strike + call_settle;
+         double call_mdd = chart_price + call_settle;
          string mdd_call_name = obj_name + "_CMD";
          ObjectDelete(0, mdd_call_name);
          if(ObjectCreate(0, mdd_call_name, OBJ_TREND, 0, time_start, call_mdd, time_end, call_mdd))
@@ -513,7 +635,7 @@ void ParseCSV(const string &csv_data, string date_str)
          if(g_base_currency == "GBP" && put_settle > 1.0)
             put_settle = put_settle / 100.0;
             
-         double put_mdd = strike - put_settle;
+         double put_mdd = chart_price - put_settle;
          string mdd_put_name = obj_name + "_PMD";
          ObjectDelete(0, mdd_put_name);
          if(ObjectCreate(0, mdd_put_name, OBJ_TREND, 0, time_start, put_mdd, time_end, put_mdd))
