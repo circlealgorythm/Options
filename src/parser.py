@@ -94,17 +94,23 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     if (re.match(r'^\.\d{3}$', part) or re.match(r'^0\.\d{3}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
                         delta_idx = idx
                         break
-                if delta_idx == -1:
+                if delta_idx < 5:
                     continue
                     
                 delta = clean_value(parts[delta_idx])
                 
-                # Settle is always at delta_idx - 2, and Net Change is at delta_idx - 1
+                # Settle is usually at delta_idx - 2, and Net Change is at delta_idx - 1.
+                # However, sometimes Settle and Change are glued together (e.g. '.00430-0.00130').
                 settle = 0.0
                 if delta_idx >= 2:
                     settle_str = parts[delta_idx - 2]
+                    change_str = parts[delta_idx - 1]
+                    
+                    if re.search(r'\d[\+\-]\d', change_str):
+                        settle_str = change_str
+                        
                     clean_part = settle_str
-                    # Handle cases like '.03080-0.00030' or '.100-7' by splitting at - or +
+                    # Handle cases like '.03080-0.00030' or '.100-7' or '2.30-' by splitting at - or +
                     for sign in ['-', '+']:
                         if sign in settle_str and settle_str.index(sign) > 0:
                             clean_part = settle_str.split(sign)[0]

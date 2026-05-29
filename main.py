@@ -99,11 +99,13 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
     def get_max_oi_settle(df, type_prefix):
         oi_col = f'{type_prefix}_OI'
         settle_col = f'{type_prefix}_Settle'
+        if df.empty:
+            return pd.DataFrame(columns=['Strike', settle_col, oi_col])
         valid_df = df[(df[oi_col] > 0) & (df[settle_col] > 0.0)]
         if not valid_df.empty:
             idx_max = valid_df[oi_col].idxmax()
-            return valid_df.loc[[idx_max], ['Strike', settle_col, oi_col]].set_index('Strike')
-        return pd.DataFrame(columns=[settle_col, oi_col])
+            return valid_df.loc[[idx_max], ['Strike', settle_col, oi_col]]
+        return pd.DataFrame(columns=['Strike', settle_col, oi_col])
         
     # Determine Global DF
     global_codes = ['EUU', 'GBU']
@@ -116,8 +118,13 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         global_df = calc_df
         
     # Determine Daily DF
+    def get_nearest_month(months):
+        m_map = {'JAN':1, 'FEB':2, 'MAR':3, 'APR':4, 'MAY':5, 'JUN':6, 'JUL':7, 'AUG':8, 'SEP':9, 'OCT':10, 'NOV':11, 'DEC':12}
+        return sorted(months, key=lambda x: (int(x[3:5]), m_map.get(x[:3], 99)))
+
     daily_codes = ['SEC', 'TEC', 'WEC', 'THC', 'FRC', 'SBP', 'TGB', 'WGB', 'MGM']
     daily_candidates = calc_df[calc_df['Option_Type'].isin(daily_codes)]
+    daily_df = pd.DataFrame(columns=calc_df.columns)
     
     if not daily_candidates.empty:
         dow = datetime.datetime.today().weekday()
@@ -126,22 +133,16 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         target_code = eur_daily.get(dow) if currency == 'EUR' else gbp_daily.get(dow)
         
         daily_df = daily_candidates[daily_candidates['Option_Type'] == target_code]
-        if daily_df.empty:
-            daily_df = daily_candidates
+        if not daily_df.empty:
+            nearest_month = get_nearest_month(daily_df['Contract_Month'].unique())[0]
+            daily_df = daily_df[daily_df['Contract_Month'] == nearest_month]
             
-        month_oi = daily_df.groupby('Contract_Month')['Call_OI'].sum() + daily_df.groupby('Contract_Month')['Put_OI'].sum()
-        if not month_oi.empty:
-            min_month = month_oi.idxmin()
-            daily_df = daily_df[daily_df['Contract_Month'] == min_month]
-    else:
+    if daily_df.empty:
         weekly_codes = ['1EU', '2EU', '3EU', '4EU', '5EU', '1BP', '2BP', '3BP', '4BP', '5BP']
         daily_candidates = calc_df[calc_df['Option_Type'].isin(weekly_codes)]
         if not daily_candidates.empty:
-            month_oi = daily_candidates.groupby('Contract_Month')['Call_OI'].sum() + daily_candidates.groupby('Contract_Month')['Put_OI'].sum()
-            min_month = month_oi.idxmin()
-            daily_df = daily_candidates[daily_candidates['Contract_Month'] == min_month]
-        else:
-            daily_df = pd.DataFrame(columns=calc_df.columns)
+            nearest_month = get_nearest_month(daily_candidates['Contract_Month'].unique())[0]
+            daily_df = daily_candidates[daily_candidates['Contract_Month'] == nearest_month]
     
     daily_call = get_max_oi_settle(daily_df, 'Call').rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
     daily_put = get_max_oi_settle(daily_df, 'Put').rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
