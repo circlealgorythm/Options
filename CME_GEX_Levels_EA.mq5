@@ -783,46 +783,56 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       bool is_max_ag = (strike == max_gamma_strike && max_abs_gamma > 0);
 
       if(is_global_call && is_global_put)
+         type_prefix += "GLOB CALL/PUT ";
+      else if(is_global_call)
+         type_prefix += "GLOB CALL ";
+      else if(is_global_put)
+         type_prefix += "GLOB PUT ";
+
+      if(is_daily_call && is_daily_put)
+         type_prefix += "DLY CALL/PUT ";
+      else if(is_daily_call)
+         type_prefix += "DLY CALL ";
+      else if(is_daily_put)
+         type_prefix += "DLY PUT ";
+
+      if(is_max_ag)
+         type_prefix += "MAX AG ";
+
+      if(is_global_call && is_global_put)
       {
          line_color = (max_global_put_oi >= max_global_call_oi) ? InpColorPutMarket : InpColorCallMarket;
          line_width = InpWidthMarket;
-         type_prefix = "GLOB CALL/PUT ";
       }
       else if(is_global_call)
       {
          line_color = InpColorCallMarket;
          line_width = InpWidthMarket;
-         type_prefix = "GLOB CALL ";
       }
       else if(is_global_put)
       {
          line_color = InpColorPutMarket;
          line_width = InpWidthMarket;
-         type_prefix = "GLOB PUT ";
       }
       else if(is_daily_call && is_daily_put)
       {
          line_color = (max_daily_put_oi >= max_daily_call_oi) ? InpColorPutMarket : InpColorCallMarket;
          line_width = 2;
-         type_prefix = "DLY CALL/PUT ";
       }
       else if(is_daily_call)
       {
          line_color = InpColorCallMarket;
          line_width = 2;
-         type_prefix = "DLY CALL ";
       }
       else if(is_daily_put)
       {
          line_color = InpColorPutMarket;
          line_width = 2;
-         type_prefix = "DLY PUT ";
       }
       else if(is_max_ag)
       {
          line_color = InpColorGamma;
          line_width = 4;
-         type_prefix = "MAX AG ";
       }
       
       string obj_name = StringFormat("%s%s_%s_%.4f", g_obj_prefix, g_base_currency, date_str, strike);
