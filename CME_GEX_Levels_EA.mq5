@@ -697,7 +697,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       int shift = iBarShift(Symbol(), PERIOD_D1, time_start);
       if(shift >= 0)
       {
-         double spot_price = iClose(Symbol(), PERIOD_D1, shift);
+         int target_shift = (shift == 0) ? 1 : shift;
+         double spot_price = iClose(Symbol(), PERIOD_D1, target_shift);
          if(spot_price > 0)
          {
             fw_offset = spot_price - futures_price;
