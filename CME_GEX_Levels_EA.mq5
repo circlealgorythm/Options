@@ -747,6 +747,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    }
    
    // Second pass: Draw the levels & labels
+   datetime label_time = time_start + 3600;
    for(int i = 0; i < valid_rows; i++)
    {
       double strike = rows[i].strike;
@@ -781,35 +782,35 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       {
          line_color = InpColorCallMarket;
          line_width = InpWidthMarket;
-         type_prefix = "[GLOB CALL] ";
+         type_prefix = "GLOB CALL ";
       }
       // Global PUT Market Boundary (1st Order)
       else if(strike == max_global_put_oi_strike && max_global_put_oi > 0)
       {
          line_color = InpColorPutMarket;
          line_width = InpWidthMarket;
-         type_prefix = "[GLOB PUT] ";
+         type_prefix = "GLOB PUT ";
       }
       // Daily CALL Market Boundary
       else if(strike == max_daily_call_oi_strike && max_daily_call_oi > 0)
       {
          line_color = InpColorCallMarket;
          line_width = 2;
-         type_prefix = "[DLY CALL] ";
+         type_prefix = "DLY CALL ";
       }
       // Daily PUT Market Boundary
       else if(strike == max_daily_put_oi_strike && max_daily_put_oi > 0)
       {
          line_color = InpColorPutMarket;
          line_width = 2;
-         type_prefix = "[DLY PUT] ";
+         type_prefix = "DLY PUT ";
       }
       // Highlight absolute maximum gamma level if it's not a market boundary
       else if(strike == max_gamma_strike && max_abs_gamma > 0)
       {
          line_color = InpColorGamma;
          line_width = 4;
-         type_prefix = "[MAX AG] ";
+         type_prefix = "MAX AG ";
       }
       
       string obj_name = StringFormat("%s%s_%s_%.4f", g_obj_prefix, g_base_currency, date_str, strike);
@@ -855,7 +856,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       // Draw text label on the left side of the level (slightly offset to the right by 1 hour / 3600 seconds)
       string text_obj_name = obj_name + "_TXT";
       ObjectDelete(0, text_obj_name);
-      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, time_start + 3600, chart_price))
+      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, label_time, chart_price))
       {
          string sign = (gex >= 0) ? "+" : "";
          string text_val = StringFormat("%sGEX %s%s (%d%%) | AG %s (%d%%)", 
@@ -891,7 +892,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 5400, mdd);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, clrBlack);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
@@ -923,7 +924,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 9000, mdd);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "G_CALL");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
@@ -955,7 +956,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 5400, mdd);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, clrBlack);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
@@ -987,7 +988,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 9000, mdd);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "G_PUT");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
