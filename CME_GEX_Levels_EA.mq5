@@ -842,25 +842,6 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetInteger(0, text_obj_name, OBJPROP_HIDDEN, true);
       }
       
-      // Gray forward basis label. Subtracting this points value from the raw futures strike gives the chart/spot level.
-      string strike_txt_name = obj_name + "_FUT";
-      ObjectDelete(0, strike_txt_name);
-      double basis_points = -fw_offset / Point();
-      double basis_label_price = chart_price - 35.0 * Point();
-      if(ObjectCreate(0, strike_txt_name, OBJ_TEXT, 0, time_start + 7200, basis_label_price))
-      {
-         ObjectSetString(0, strike_txt_name, OBJPROP_TEXT, StringFormat("%+.0f", basis_points));
-         ObjectSetInteger(0, strike_txt_name, OBJPROP_COLOR, clrGray);
-         ObjectSetInteger(0, strike_txt_name, OBJPROP_FONTSIZE, 8);
-         ObjectSetString(0, strike_txt_name, OBJPROP_FONT, "Consolas");
-         ObjectSetInteger(0, strike_txt_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-         ObjectSetInteger(0, strike_txt_name, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, strike_txt_name, OBJPROP_HIDDEN, true);
-         ObjectSetString(0, strike_txt_name, OBJPROP_TOOLTIP,
-                         StringFormat("Forward basis: %+.0f points | Futures strike: %.5f | Chart/spot price: %.5f | Formula: futures - basis = spot",
-                                      basis_points, strike, chart_price));
-      }
-      
       // Daily Call MDD
       if(strike == max_daily_call_oi_strike && rows[i].daily_call_settle > 0.0)
       {
