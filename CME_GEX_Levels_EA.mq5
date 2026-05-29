@@ -49,8 +49,8 @@ input ENUM_LINE_STYLE InpStyleNewMonth = STYLE_DASH;   // Option Month Line Styl
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
 input bool     InpFillZones   = true;              // Fill volatility zones with color (false = draw borders only)
-input color    InpColorR68    = C'244,224,224';    // R68 Zone Color (68% probability)
-input color    InpColorR95    = C'248,255,248';    // R95 Zone Color (95% probability)
+input color    InpColorR68    = C'248,238,238';    // R68 Zone Color (68% probability)
+input color    InpColorR95    = C'252,255,252';    // R95 Zone Color (95% probability)
 
 //--- Global Variables
 datetime       g_last_update = 0;
