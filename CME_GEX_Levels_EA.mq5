@@ -705,44 +705,88 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       }
    }
    
-   // Draw volatility zones first (so they are in the background)
-   if(InpDrawZones && r68_high > 0.0 && r68_low > 0.0)
-   {
-      double chart_r95_high = r95_high + fw_offset;
-      double chart_r95_low = r95_low + fw_offset;
-      double chart_r68_high = r68_high + fw_offset;
-      double chart_r68_low = r68_low + fw_offset;
-      color zone_r95_color = InpColorR95;
-      color zone_r68_color = InpColorR68;
-      
-      string r95_name = StringFormat("%s%s_%s_R95", g_obj_prefix, g_base_currency, date_str);
-      ObjectDelete(0, r95_name);
-      if(ObjectCreate(0, r95_name, OBJ_RECTANGLE, 0, time_start, chart_r95_high, time_end, chart_r95_low))
-      {
-         ObjectSetInteger(0, r95_name, OBJPROP_COLOR, zone_r95_color);
-         ObjectSetInteger(0, r95_name, OBJPROP_FILL, InpFillZones);
-         ObjectSetInteger(0, r95_name, OBJPROP_BACK, true);
-         ObjectSetInteger(0, r95_name, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, r95_name, OBJPROP_HIDDEN, true);
-         ObjectSetString(0, r95_name, OBJPROP_TOOLTIP,
-                         StringFormat("Date: %s | R95 Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
-                                      date_str, chart_r95_low, chart_r95_high, r95_low, r95_high));
-      }
-      
-      string r68_name = StringFormat("%s%s_%s_R68", g_obj_prefix, g_base_currency, date_str);
-      ObjectDelete(0, r68_name);
-      if(ObjectCreate(0, r68_name, OBJ_RECTANGLE, 0, time_start, chart_r68_high, time_end, chart_r68_low))
-      {
-         ObjectSetInteger(0, r68_name, OBJPROP_COLOR, zone_r68_color);
-         ObjectSetInteger(0, r68_name, OBJPROP_FILL, InpFillZones);
-         ObjectSetInteger(0, r68_name, OBJPROP_BACK, true);
-         ObjectSetInteger(0, r68_name, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, r68_name, OBJPROP_HIDDEN, true);
-         ObjectSetString(0, r68_name, OBJPROP_TOOLTIP,
-                         StringFormat("Date: %s | R68 Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
-                                      date_str, chart_r68_low, chart_r68_high, r68_low, r68_high));
-      }
-   }
+    // Draw volatility zones first (so they are in the background)
+    if(InpDrawZones && r68_high > 0.0 && r68_low > 0.0)
+    {
+       double chart_r95_high = r95_high + fw_offset;
+       double chart_r95_low = r95_low + fw_offset;
+       double chart_r68_high = r68_high + fw_offset;
+       double chart_r68_low = r68_low + fw_offset;
+       color zone_r95_color = InpColorR95;
+       color zone_r68_color = InpColorR68;
+       
+       string r95_name = StringFormat("%s%s_%s_R95", g_obj_prefix, g_base_currency, date_str);
+       string r95_name_upper = StringFormat("%s%s_%s_R95_U", g_obj_prefix, g_base_currency, date_str);
+       string r95_name_lower = StringFormat("%s%s_%s_R95_L", g_obj_prefix, g_base_currency, date_str);
+       
+       if(InpFillZones)
+       {
+          // If filled, split R95 into upper and lower parts to avoid overlapping/mixing colors with R68 in the center
+          ObjectDelete(0, r95_name);
+          
+          // Upper R95 part (from 95% High to 68% High)
+          ObjectDelete(0, r95_name_upper);
+          if(ObjectCreate(0, r95_name_upper, OBJ_RECTANGLE, 0, time_start, chart_r95_high, time_end, chart_r68_high))
+          {
+             ObjectSetInteger(0, r95_name_upper, OBJPROP_COLOR, zone_r95_color);
+             ObjectSetInteger(0, r95_name_upper, OBJPROP_FILL, true);
+             ObjectSetInteger(0, r95_name_upper, OBJPROP_BACK, true);
+             ObjectSetInteger(0, r95_name_upper, OBJPROP_SELECTABLE, false);
+             ObjectSetInteger(0, r95_name_upper, OBJPROP_HIDDEN, true);
+             ObjectSetString(0, r95_name_upper, OBJPROP_TOOLTIP,
+                             StringFormat("Date: %s | R95 Upper Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
+                                          date_str, chart_r68_high, chart_r95_high, r68_high, r95_high));
+          }
+          
+          // Lower R95 part (from 68% Low to 95% Low)
+          ObjectDelete(0, r95_name_lower);
+          if(ObjectCreate(0, r95_name_lower, OBJ_RECTANGLE, 0, time_start, chart_r68_low, time_end, chart_r95_low))
+          {
+             ObjectSetInteger(0, r95_name_lower, OBJPROP_COLOR, zone_r95_color);
+             ObjectSetInteger(0, r95_name_lower, OBJPROP_FILL, true);
+             ObjectSetInteger(0, r95_name_lower, OBJPROP_BACK, true);
+             ObjectSetInteger(0, r95_name_lower, OBJPROP_SELECTABLE, false);
+             ObjectSetInteger(0, r95_name_lower, OBJPROP_HIDDEN, true);
+             ObjectSetString(0, r95_name_lower, OBJPROP_TOOLTIP,
+                             StringFormat("Date: %s | R95 Lower Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
+                                          date_str, chart_r95_low, chart_r68_low, r95_low, r68_low));
+          }
+       }
+       else
+       {
+          // If borders only, draw single big R95 rectangle to avoid drawing border dividing line in the middle
+          ObjectDelete(0, r95_name_upper);
+          ObjectDelete(0, r95_name_lower);
+          
+          ObjectDelete(0, r95_name);
+          if(ObjectCreate(0, r95_name, OBJ_RECTANGLE, 0, time_start, chart_r95_high, time_end, chart_r95_low))
+          {
+             ObjectSetInteger(0, r95_name, OBJPROP_COLOR, zone_r95_color);
+             ObjectSetInteger(0, r95_name, OBJPROP_FILL, false);
+             ObjectSetInteger(0, r95_name, OBJPROP_BACK, true);
+             ObjectSetInteger(0, r95_name, OBJPROP_SELECTABLE, false);
+             ObjectSetInteger(0, r95_name, OBJPROP_HIDDEN, true);
+             ObjectSetString(0, r95_name, OBJPROP_TOOLTIP,
+                             StringFormat("Date: %s | R95 Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
+                                          date_str, chart_r95_low, chart_r95_high, r95_low, r95_high));
+          }
+       }
+       
+       // Center R68 part (from 68% High to 68% Low)
+       string r68_name = StringFormat("%s%s_%s_R68", g_obj_prefix, g_base_currency, date_str);
+       ObjectDelete(0, r68_name);
+       if(ObjectCreate(0, r68_name, OBJ_RECTANGLE, 0, time_start, chart_r68_high, time_end, chart_r68_low))
+       {
+          ObjectSetInteger(0, r68_name, OBJPROP_COLOR, zone_r68_color);
+          ObjectSetInteger(0, r68_name, OBJPROP_FILL, InpFillZones);
+          ObjectSetInteger(0, r68_name, OBJPROP_BACK, true);
+          ObjectSetInteger(0, r68_name, OBJPROP_SELECTABLE, false);
+          ObjectSetInteger(0, r68_name, OBJPROP_HIDDEN, true);
+          ObjectSetString(0, r68_name, OBJPROP_TOOLTIP,
+                          StringFormat("Date: %s | R68 Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
+                                       date_str, chart_r68_low, chart_r68_high, r68_low, r68_high));
+       }
+    }
    
    // Second pass: Draw the levels & labels
    datetime label_time = time_start + 3600;
