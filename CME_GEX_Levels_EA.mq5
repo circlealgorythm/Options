@@ -215,6 +215,10 @@ void UpdateLevels()
    
    datetime current_time = TimeCurrent();
    int success_count = 0;
+   MqlDateTime current_dt;
+   TimeToStruct(current_time, current_dt);
+   string today_str = StringFormat("%04d-%02d-%02d", current_dt.year, current_dt.mon, current_dt.day);
+   bool today_loaded = false;
    
    string prev_month = "";
    datetime prev_date_time = 0;
@@ -234,6 +238,8 @@ void UpdateLevels()
       if(FetchAndParseDate(date_str, current_month))
       {
          success_count++;
+         if(date_str == today_str)
+            today_loaded = true;
          datetime time_start = StringToTime(date_str + " 00:00:00");
          
          // If we detect a month transition between chronologically adjacent days (scanned backward)
@@ -277,6 +283,7 @@ void UpdateLevels()
    }
    
    UpdateVisibility();
+   DrawUpdateStatus(today_str, today_loaded, success_count);
    ChartRedraw(0);
    Print("Levels update completed. Successfully loaded data for ", success_count, " days.");
    
@@ -298,6 +305,31 @@ void UpdateLevels()
       }
    }
    PrintFormat("Debug Total Objects with Prefix '%s': %d (out of %d total chart objects)", g_obj_prefix, cme_obj_count, total_obj);
+}
+
+//+------------------------------------------------------------------+
+//| Draw data freshness status                                       |
+//+------------------------------------------------------------------+
+void DrawUpdateStatus(string today_str, bool today_loaded, int success_count)
+{
+   string name = g_obj_prefix + "UpdateStatus";
+   ObjectDelete(0, name);
+   
+   if(ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0))
+   {
+      string status = today_loaded ? "GEX today OK: " : "GEX today MISSING: ";
+      status += today_str + StringFormat(" | loaded days: %d", success_count);
+      
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 15);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 56);
+      ObjectSetString(0, name, OBJPROP_TEXT, status);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, today_loaded ? clrSeaGreen : clrCrimson);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   }
 }
 
 //+------------------------------------------------------------------+
