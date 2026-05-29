@@ -132,13 +132,13 @@ def validate_mdd_summary(summary, currency):
     required = [
         ("Daily_Call", "Daily_Call_OI", "Daily_Call_Settle"),
         ("Daily_Put", "Daily_Put_OI", "Daily_Put_Settle"),
-        ("Global_Call", "Global_Call_OI", "Global_Call_Settle"),
-        ("Global_Put", "Global_Put_OI", "Global_Put_Settle"),
+        ("Global_Call", "Global_Call_OI", None),
+        ("Global_Put", "Global_Put_OI", None),
     ]
 
     missing = []
     for label, oi_col, settle_col in required:
-        if summary[oi_col].max() <= 0.0 or summary[settle_col].max() <= 0.0:
+        if summary[oi_col].max() <= 0.0 or (settle_col is not None and summary[settle_col].max() <= 0.0):
             missing.append(label)
 
     daily_month = str(summary["Daily_Month"].iloc[0]) if "Daily_Month" in summary.columns and not summary.empty else "UNKNOWN"
@@ -269,16 +269,15 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         
     calc_df = pd.DataFrame(calculated_rows)
     
-    def get_max_oi_settle(df, type_prefix):
+    def get_max_oi_level(df, type_prefix):
         oi_col = f'{type_prefix}_OI'
-        settle_col = f'{type_prefix}_Settle'
         if df.empty:
-            return pd.DataFrame(columns=['Strike', settle_col, oi_col])
-        valid_df = df[(df[oi_col] > 0) & (df[settle_col] > 0.0)]
+            return pd.DataFrame(columns=['Strike', oi_col])
+        valid_df = df[df[oi_col] > 0]
         if not valid_df.empty:
             idx_max = valid_df[oi_col].idxmax()
-            return valid_df.loc[[idx_max], ['Strike', settle_col, oi_col]]
-        return pd.DataFrame(columns=['Strike', settle_col, oi_col])
+            return valid_df.loc[[idx_max], ['Strike', oi_col]]
+        return pd.DataFrame(columns=['Strike', oi_col])
 
     # Determine Global DF
     max_month = 'UNKNOWN'
@@ -297,8 +296,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     daily_call = select_near_spot_mdd_settle(daily_df, 'Call', spot).rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
     daily_put = select_near_spot_mdd_settle(daily_df, 'Put', spot).rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
     
-    global_call = get_max_oi_settle(global_df, 'Call').rename(columns={'Call_OI': 'Global_Call_OI', 'Call_Settle': 'Global_Call_Settle'})
-    global_put = get_max_oi_settle(global_df, 'Put').rename(columns={'Put_OI': 'Global_Put_OI', 'Put_Settle': 'Global_Put_Settle'})
+    global_call = get_max_oi_level(global_df, 'Call').rename(columns={'Call_OI': 'Global_Call_OI'})
+    global_put = get_max_oi_level(global_df, 'Put').rename(columns={'Put_OI': 'Global_Put_OI'})
     
     # Group by Strike and sum values across all expirations/series
     summary = calc_df.groupby('Strike').agg({

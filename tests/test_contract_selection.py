@@ -103,9 +103,7 @@ def test_validate_mdd_summary_rejects_missing_daily_levels():
                 "Daily_Put_OI": 0.0,
                 "Daily_Put_Settle": 0.0,
                 "Global_Call_OI": 10.0,
-                "Global_Call_Settle": 0.001,
                 "Global_Put_OI": 20.0,
-                "Global_Put_Settle": 0.002,
                 "Daily_Month": "UNKNOWN",
                 "Global_Month": "JUN26",
             }

@@ -38,7 +38,6 @@ input group "--- Risk Premiums (2nd Order - MDD) ---"
 input color    InpColorMDDCall= clrRoyalBlue;      // Call MDD (Breakeven) Color
 input color    InpColorMDDPut = clrOrangeRed;      // Put MDD (Breakeven) Color
 input int      InpWidthDailyMDD   = 2;             // Daily MDD Line Width (Dash-Dot style)
-input int      InpWidthGlobalMDD  = 3;             // Global MDD Line Width (Solid style)
 
 input group "--- Option Month Settings ---"
 input bool     InpDrawMonthLines  = true;              // Draw option month separator lines
@@ -470,9 +469,7 @@ struct OptionRow {
    double daily_call_oi;
    double daily_put_settle;
    double daily_put_oi;
-   double global_call_settle;
    double global_call_oi;
-   double global_put_settle;
    double global_put_oi;
 };
 
@@ -580,9 +577,9 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    if(total_lines > 1)
       PrintFormat("ParseCSV Debug: Line 1 (First data row) = '%s'", lines[1]);
 
-   if(StringFind(lines[0], "Daily_Call_Settle") < 0 || StringFind(lines[0], "Global_Call_Settle") < 0)
+   if(StringFind(lines[0], "Daily_Call_Settle") < 0 || StringFind(lines[0], "Global_Call_OI") < 0)
    {
-      Print("Unsupported CSV schema. Expected Daily/Global MDD columns, got: ", lines[0]);
+      Print("Unsupported CSV schema. Expected Daily MDD and Global OI columns, got: ", lines[0]);
       return false;
    }
       
@@ -628,8 +625,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
       
-      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low,Global_Month,Daily_Month,Futures_Spot
-      if(total_cols < 19)
+      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_OI,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low,Global_Month,Daily_Month,Futures_Spot
+      if(total_cols < 17)
          continue;
          
       double strike = StringToDouble(columns[1]);
@@ -641,25 +638,23 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       double d_put_settle = StringToDouble(columns[6]);
       double d_put_oi = StringToDouble(columns[7]);
       
-      double g_call_settle = StringToDouble(columns[8]);
-      double g_call_oi = StringToDouble(columns[9]);
-      double g_put_settle = StringToDouble(columns[10]);
-      double g_put_oi = StringToDouble(columns[11]);
+      double g_call_oi = StringToDouble(columns[8]);
+      double g_put_oi = StringToDouble(columns[9]);
       
       // Read volatility zones and months from the first matching row
-      if(total_cols >= 16 && r68_high == 0.0)
+      if(total_cols >= 14 && r68_high == 0.0)
       {
-         r68_high = StringToDouble(columns[12]);
-         r68_low = StringToDouble(columns[13]);
-         r95_high = StringToDouble(columns[14]);
-         r95_low = StringToDouble(columns[15]);
-         if(total_cols >= 18)
+         r68_high = StringToDouble(columns[10]);
+         r68_low = StringToDouble(columns[11]);
+         r95_high = StringToDouble(columns[12]);
+         r95_low = StringToDouble(columns[13]);
+         if(total_cols >= 16)
          {
-            out_global_month = columns[16];
+            out_global_month = columns[14];
          }
-         if(total_cols >= 19)
+         if(total_cols >= 17)
          {
-            futures_spot = StringToDouble(columns[18]);
+            futures_spot = StringToDouble(columns[16]);
          }
       }
       
@@ -675,13 +670,13 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          max_daily_put_oi_strike = strike;
       }
       
-      if(g_call_oi > max_global_call_oi && g_call_settle > 0.0)
+      if(g_call_oi > max_global_call_oi)
       {
          max_global_call_oi = g_call_oi;
          max_global_call_oi_strike = strike;
       }
       
-      if(g_put_oi > max_global_put_oi && g_put_settle > 0.0)
+      if(g_put_oi > max_global_put_oi)
       {
          max_global_put_oi = g_put_oi;
          max_global_put_oi_strike = strike;
@@ -689,8 +684,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       
       bool has_mdd_data = ((d_call_oi > 0.0 && d_call_settle > 0.0) ||
                            (d_put_oi > 0.0 && d_put_settle > 0.0) ||
-                           (g_call_oi > 0.0 && g_call_settle > 0.0) ||
-                           (g_put_oi > 0.0 && g_put_settle > 0.0));
+                           (g_call_oi > 0.0) ||
+                           (g_put_oi > 0.0));
       
       if(MathAbs(total_gex) >= InpMinGexFilter || has_mdd_data)
       {
@@ -701,9 +696,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          rows[valid_rows].daily_call_oi = d_call_oi;
          rows[valid_rows].daily_put_settle = d_put_settle;
          rows[valid_rows].daily_put_oi = d_put_oi;
-         rows[valid_rows].global_call_settle = g_call_settle;
          rows[valid_rows].global_call_oi = g_call_oi;
-         rows[valid_rows].global_put_settle = g_put_settle;
          rows[valid_rows].global_put_oi = g_put_oi;
          
          double abs_gex = MathAbs(total_gex);
@@ -1020,38 +1013,6 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          }
       }
       
-      // Global Call MDD
-      if(strike == max_global_call_oi_strike && rows[i].global_call_settle > 0.0)
-      {
-         double settle = rows[i].global_call_settle;
-         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
-         double mdd = chart_price + settle;
-         string name = obj_name + "_GCMD";
-         ObjectDelete(0, name);
-         if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
-         {
-            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-            ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
-            ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthGlobalMDD);
-            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
-            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, false);
-            ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Global Call MDD Premium: %.4f", settle));
-            
-            string txt = name + "_TXT";
-            ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "G_CALL");
-            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
-            ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
-            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
-         }
-      }
-
       // Daily Put MDD
       if(strike == max_daily_put_oi_strike && rows[i].daily_put_settle > 0.0)
       {
@@ -1084,37 +1045,6 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          }
       }
       
-      // Global Put MDD
-      if(strike == max_global_put_oi_strike && rows[i].global_put_settle > 0.0)
-      {
-         double settle = rows[i].global_put_settle;
-         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
-         double mdd = chart_price - settle;
-         string name = obj_name + "_GPMD";
-         ObjectDelete(0, name);
-         if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
-         {
-            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-            ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
-            ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthGlobalMDD);
-            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
-            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, false);
-            ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Global Put MDD Premium: %.4f", settle));
-            
-            string txt = name + "_TXT";
-            ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "G_PUT");
-            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
-            ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
-            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
-         }
-      }
    }
 
    return true;
