@@ -49,10 +49,8 @@ input ENUM_LINE_STYLE InpStyleNewMonth = STYLE_DASH;   // Option Month Line Styl
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
 input bool     InpFillZones   = true;              // Fill volatility zones with color (false = draw borders only)
-input color    InpColorR68    = C'240,120,120';    // R68 Zone Tint Color (68% probability)
-input color    InpColorR95    = C'130,220,150';    // R95 Zone Tint Color (95% probability)
-input int      InpR68TintPct  = 14;                // R68 tint strength against chart background
-input int      InpR95TintPct  = 7;                 // R95 tint strength against chart background
+input color    InpColorR68    = C'35,20,20';       // R68 Zone Color (68% probability)
+input color    InpColorR95    = C'20,30,20';       // R95 Zone Color (95% probability)
 
 //--- Global Variables
 datetime       g_last_update = 0;
@@ -714,8 +712,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       double chart_r95_low = r95_low + fw_offset;
       double chart_r68_high = r68_high + fw_offset;
       double chart_r68_low = r68_low + fw_offset;
-      color zone_r95_color = BlendWithChartBackground(InpColorR95, InpR95TintPct);
-      color zone_r68_color = BlendWithChartBackground(InpColorR68, InpR68TintPct);
+      color zone_r95_color = InpColorR95;
+      color zone_r68_color = InpColorR68;
       
       string r95_name = StringFormat("%s%s_%s_R95", g_obj_prefix, g_base_currency, date_str);
       ObjectDelete(0, r95_name);
