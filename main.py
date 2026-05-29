@@ -4,7 +4,7 @@ import re
 import shutil
 import pandas as pd
 import pdfplumber
-from src.parser import download_cme_bulletin, parse_cme_pdf
+from src.parser import download_cme_bulletin, extract_bulletin_date, parse_cme_pdf
 from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma
 
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
@@ -22,6 +22,11 @@ EUR_DAILY_CODES = ['SEC', 'TEC', 'WEC', 'THC', 'FRC']
 EUR_WEEKLY_CODES = ['1EU', '2EU', '3EU', '4EU', '5EU']
 GBP_SHORT_CODES = ['MGB', 'TGB', 'WGB', 'SBP', 'FGB', 'MGM']
 GBP_WEEKLY_CODES = ['1BP', '2BP', '3BP', '4BP', '5BP']
+
+EUR_DAILY_CODE_DOW = {'SEC': 0, 'TEC': 1, 'WEC': 2, 'THC': 3, 'FRC': 4}
+EUR_WEEKLY_CODE_DOW = {'1EU': 0, '2EU': 1, '3EU': 2, '4EU': 3, '5EU': 4}
+GBP_SHORT_CODE_DOW = {'MGB': 0, 'MGM': 0, 'TGB': 1, 'WGB': 2, 'SBP': 3, 'FGB': 4}
+GBP_WEEKLY_CODE_DOW = {'1BP': 0, '2BP': 1, '3BP': 2, '4BP': 3, '5BP': 4}
 
 
 def month_sort_key(month):
@@ -47,6 +52,19 @@ def filter_nearest_month(df):
     if month is None:
         return df.iloc[0:0]
     return df[df['Contract_Month'] == month]
+
+
+def filter_nearest_code(df, code_dow_map, as_of_date):
+    if df.empty or 'Option_Type' not in df.columns:
+        return df
+
+    available = [code for code in code_dow_map if code in set(df['Option_Type'])]
+    if not available:
+        return df.iloc[0:0]
+
+    dow = as_of_date.weekday()
+    code = sorted(available, key=lambda item: ((code_dow_map[item] - dow) % 5, code_dow_map[item], item))[0]
+    return df[df['Option_Type'] == code]
 
 
 def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
@@ -89,10 +107,10 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
 
         weekly = calc_df[calc_df['Option_Type'].isin(EUR_WEEKLY_CODES)]
         if not weekly.empty:
-            return filter_nearest_month(weekly)
+            return filter_nearest_month(filter_nearest_code(weekly, EUR_WEEKLY_CODE_DOW, as_of_date))
 
         daily = calc_df[calc_df['Option_Type'].isin(EUR_DAILY_CODES)]
-        return filter_nearest_month(daily)
+        return filter_nearest_month(filter_nearest_code(daily, EUR_DAILY_CODE_DOW, as_of_date))
 
     if currency == 'GBP':
         target_code = GBP_DAILY_BY_WEEKDAY.get(dow)
@@ -102,10 +120,10 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
 
         weekly = calc_df[calc_df['Option_Type'].isin(GBP_WEEKLY_CODES)]
         if not weekly.empty:
-            return filter_nearest_month(weekly)
+            return filter_nearest_month(filter_nearest_code(weekly, GBP_WEEKLY_CODE_DOW, as_of_date))
 
         short = calc_df[calc_df['Option_Type'].isin(GBP_SHORT_CODES)]
-        return filter_nearest_month(short)
+        return filter_nearest_month(filter_nearest_code(short, GBP_SHORT_CODE_DOW, as_of_date))
 
     return pd.DataFrame(columns=calc_df.columns)
 
@@ -314,12 +332,16 @@ if __name__ == "__main__":
     
     # Step 2: Parse and process EUR data
     if eur_ok:
+        eur_bulletin_date = extract_bulletin_date(eur_dest) or datetime.date.today()
+        print(f"[EUR] CME bulletin trade date: {eur_bulletin_date}")
         eur_raw = parse_cme_pdf(eur_dest, "EUR", is_call_only=None)
-        calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR)
+        calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR, eur_bulletin_date)
         
     # Step 3: Parse and process GBP data
     if gbp_call_ok and gbp_put_ok:
+        gbp_bulletin_date = extract_bulletin_date(gbp_call_dest) or extract_bulletin_date(gbp_put_dest) or datetime.date.today()
+        print(f"[GBP] CME bulletin trade date: {gbp_bulletin_date}")
         gbp_calls = parse_cme_pdf(gbp_call_dest, "GBP", is_call_only=True)
         gbp_puts = parse_cme_pdf(gbp_put_dest, "GBP", is_call_only=False)
         gbp_raw = pd.concat([gbp_calls, gbp_puts])
-        calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR)
+        calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR, gbp_bulletin_date)

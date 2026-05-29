@@ -1,8 +1,24 @@
 import os
 import re
+import datetime
 import pandas as pd
 import pdfplumber
 from curl_cffi import requests
+
+MONTH_NAME_MAP = {
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
+}
 
 def download_cme_bulletin(url_or_section: str, dest_path: str):
     """
@@ -34,6 +50,30 @@ def clean_value(val):
         return float(cleaned)
     except:
         return 0.0
+
+def parse_bulletin_date_from_text(text: str):
+    match = re.search(r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\b', text)
+    if not match:
+        return None
+
+    month = MONTH_NAME_MAP.get(match.group(1).upper())
+    if month is None:
+        return None
+
+    return datetime.date(int(match.group(3)), month, int(match.group(2)))
+
+def extract_bulletin_date(pdf_path: str):
+    if not os.path.exists(pdf_path):
+        return None
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages[:2]:
+            text = page.extract_text() or ""
+            bulletin_date = parse_bulletin_date_from_text(text)
+            if bulletin_date is not None:
+                return bulletin_date
+
+    return None
 
 def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
     """
@@ -132,7 +172,13 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                         else:
                             settle = raw_settle / 1000.0
                     elif currency == 'GBP':
-                        settle = raw_settle / 100.0
+                        is_decimal_quoted = False
+                        if '.' in clean_part:
+                            num_part = re.sub(r'[^\d.]', '', clean_part).strip()
+                            if '.' in num_part and len(num_part.split('.')[1]) >= 5:
+                                is_decimal_quoted = True
+
+                        settle = raw_settle if is_decimal_quoted else raw_settle / 100.0
                     else:
                         settle = raw_settle
                         
