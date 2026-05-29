@@ -103,7 +103,7 @@ void CreateButtons()
 {
    ObjectCreate(0, "Btn_ShowGEX", OBJ_BUTTON, 0, 0, 0);
    ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YDISTANCE, 42);
    ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XSIZE, 54);
    ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YSIZE, 24);
    ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_CORNER, CORNER_LEFT_LOWER);
@@ -111,7 +111,7 @@ void CreateButtons()
    
    ObjectCreate(0, "Btn_ShowAG", OBJ_BUTTON, 0, 0, 0);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XDISTANCE, 70);
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YDISTANCE, 42);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XSIZE, 42);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YSIZE, 24);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_CORNER, CORNER_LEFT_LOWER);
@@ -842,21 +842,23 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetInteger(0, text_obj_name, OBJPROP_HIDDEN, true);
       }
       
-      // Gray chart/spot price label after forward adjustment. Raw futures strike is kept in the tooltip.
+      // Gray forward basis label. Subtracting this points value from the raw futures strike gives the chart/spot level.
       string strike_txt_name = obj_name + "_FUT";
       ObjectDelete(0, strike_txt_name);
-      if(ObjectCreate(0, strike_txt_name, OBJ_TEXT, 0, time_start + 7200, chart_price))
+      double basis_points = -fw_offset / Point();
+      double basis_label_price = chart_price - 35.0 * Point();
+      if(ObjectCreate(0, strike_txt_name, OBJ_TEXT, 0, time_start + 7200, basis_label_price))
       {
-         ObjectSetString(0, strike_txt_name, OBJPROP_TEXT, StringFormat("%.5f", chart_price));
+         ObjectSetString(0, strike_txt_name, OBJPROP_TEXT, StringFormat("%+.0f", basis_points));
          ObjectSetInteger(0, strike_txt_name, OBJPROP_COLOR, clrGray);
          ObjectSetInteger(0, strike_txt_name, OBJPROP_FONTSIZE, 8);
          ObjectSetString(0, strike_txt_name, OBJPROP_FONT, "Consolas");
-         ObjectSetInteger(0, strike_txt_name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+         ObjectSetInteger(0, strike_txt_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
          ObjectSetInteger(0, strike_txt_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, strike_txt_name, OBJPROP_HIDDEN, true);
          ObjectSetString(0, strike_txt_name, OBJPROP_TOOLTIP,
-                         StringFormat("Chart/spot price: %.5f | Futures strike: %.5f | Forward offset: %.5f",
-                                      chart_price, strike, fw_offset));
+                         StringFormat("Forward basis: %+.0f points | Futures strike: %.5f | Chart/spot price: %.5f | Formula: futures - basis = spot",
+                                      basis_points, strike, chart_price));
       }
       
       // Daily Call MDD
