@@ -744,8 +744,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          line_width = InpBaseLineWidth;
       }
       
-      datetime gex_line_end = time_start + (int)((time_end - time_start) * MathMax(0.1, gex_ratio));
-      datetime ag_line_end = time_start + (int)((time_end - time_start) * MathMax(0.1, ag_ratio));
+      datetime gex_line_end = time_start + (int)((time_end - time_start) * MathMax(0.2, gex_ratio));
+      datetime ag_line_end = time_start + (int)((time_end - time_start) * MathMax(0.2, ag_ratio));
       
       string type_prefix = "";
       
