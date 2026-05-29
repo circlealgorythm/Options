@@ -17,7 +17,8 @@ input string   InpGithubToken = "";                // GitHub PAT (leave empty if
 input group "--- Display Settings ---"
 input int      InpHistoryDays = 30;                // Days of history to load
 input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
-input int      InpBaseLineWidth = 1;               // Base Line Width
+input int      InpBaseLineWidth = 1;               // Base Line Width (for all lines)
+input bool     InpUseDynamicWidth = true;          // Scale GEX line widths dynamically based on volume
 input int      InpForwardPoints = 0;               // Forward Point (Manual Shift in points)
 input bool     InpAutoSpotAdjust= true;            // Auto-adjust to Spot Price (Overrides Manual)
 input color    InpColorCall   = clrMediumSeaGreen; // Positive GEX Color (Support)
@@ -36,8 +37,14 @@ input color    InpColorAGLine = C'0,191,255';      // AG Line Color (DeepSkyBlue
 input group "--- Risk Premiums (2nd Order - MDD) ---"
 input color    InpColorMDDCall= clrRoyalBlue;      // Call MDD (Breakeven) Color
 input color    InpColorMDDPut = clrOrangeRed;      // Put MDD (Breakeven) Color
-input int      InpWidthDailyMDD   = 1;             // Daily MDD Line Width
-input int      InpWidthGlobalMDD  = 3;             // Global MDD Line Width
+input int      InpWidthDailyMDD   = 2;             // Daily MDD Line Width (Dash-Dot style)
+input int      InpWidthGlobalMDD  = 3;             // Global MDD Line Width (Solid style)
+
+input group "--- Option Month Settings ---"
+input bool     InpDrawMonthLines  = true;              // Draw option month separator lines
+input color    InpColorNewMonth   = clrMediumOrchid;   // Option Month Line Color
+input int      InpWidthNewMonth   = 2;                 // Option Month Line Width
+input ENUM_LINE_STYLE InpStyleNewMonth = STYLE_DASH;   // Option Month Line Style
 
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
@@ -208,6 +215,9 @@ void UpdateLevels()
    datetime current_time = TimeCurrent();
    int success_count = 0;
    
+   string prev_month = "";
+   datetime prev_date_time = 0;
+   
    for(int i = 0; i < InpHistoryDays; i++)
    {
       datetime target_date = current_time - i * 86400;
@@ -218,9 +228,50 @@ void UpdateLevels()
          continue;
          
       string date_str = StringFormat("%04d-%02d-%02d", dt.year, dt.mon, dt.day);
-      if(FetchAndParseDate(date_str))
+      string current_month = "";
+      
+      if(FetchAndParseDate(date_str, current_month))
       {
          success_count++;
+         datetime time_start = StringToTime(date_str + " 00:00:00");
+         
+         // If we detect a month transition between chronologically adjacent days (scanned backward)
+         if(InpDrawMonthLines && prev_month != "" && current_month != "" && current_month != "UNKNOWN" && prev_month != "UNKNOWN" && current_month != prev_month)
+         {
+            // Transition happened going back in time. Chronologically, prev_date_time is the first day of the new month (prev_month).
+            string line_name = g_obj_prefix + "Month_Separator_" + TimeToString(prev_date_time, TIME_DATE);
+            ObjectDelete(0, line_name);
+            if(ObjectCreate(0, line_name, OBJ_VLINE, 0, prev_date_time, 0))
+            {
+               ObjectSetInteger(0, line_name, OBJPROP_COLOR, InpColorNewMonth);
+               ObjectSetInteger(0, line_name, OBJPROP_WIDTH, InpWidthNewMonth);
+               ObjectSetInteger(0, line_name, OBJPROP_STYLE, InpStyleNewMonth);
+               ObjectSetInteger(0, line_name, OBJPROP_SELECTABLE, false);
+               ObjectSetInteger(0, line_name, OBJPROP_HIDDEN, true);
+               ObjectSetInteger(0, line_name, OBJPROP_BACK, true);
+               ObjectSetString(0, line_name, OBJPROP_TOOLTIP, "New Option Month: " + prev_month);
+               
+               // Draw text label on the chart for the new option month
+               string label_name = line_name + "_TXT";
+               ObjectDelete(0, label_name);
+               if(ObjectCreate(0, label_name, OBJ_TEXT, 0, prev_date_time, SymbolInfoDouble(Symbol(), SYMBOL_ASK)))
+               {
+                  ObjectSetString(0, label_name, OBJPROP_TEXT, " " + prev_month);
+                  ObjectSetInteger(0, label_name, OBJPROP_COLOR, InpColorNewMonth);
+                  ObjectSetInteger(0, label_name, OBJPROP_FONTSIZE, 9);
+                  ObjectSetString(0, label_name, OBJPROP_FONT, "Consolas");
+                  ObjectSetInteger(0, label_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+                  ObjectSetInteger(0, label_name, OBJPROP_SELECTABLE, false);
+                  ObjectSetInteger(0, label_name, OBJPROP_HIDDEN, true);
+               }
+            }
+         }
+         
+         if(current_month != "" && current_month != "UNKNOWN")
+         {
+            prev_month = current_month;
+            prev_date_time = time_start;
+         }
       }
    }
    
@@ -251,8 +302,9 @@ void UpdateLevels()
 //+------------------------------------------------------------------+
 //| Download and parse CSV file for a specific date                  |
 //+------------------------------------------------------------------+
-bool FetchAndParseDate(string date_str)
+bool FetchAndParseDate(string date_str, string &out_month)
 {
+   out_month = "UNKNOWN";
    // 1. Try to load from local file first (MQL5/Files/GEX/GEX_xxxUSD_yyyy-mm-dd.csv)
    string local_file_path = "GEX\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
    ResetLastError();
@@ -267,7 +319,7 @@ bool FetchAndParseDate(string date_str)
       FileClose(file_handle);
       
       Print("Loaded levels locally from: Files\\", local_file_path);
-      ParseCSV(csv_data, date_str);
+      ParseCSV(csv_data, date_str, out_month);
       return true;
    }
    
@@ -300,7 +352,7 @@ bool FetchAndParseDate(string date_str)
    if(res == 200)
    {
       string csv_data = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
-      ParseCSV(csv_data, date_str);
+      ParseCSV(csv_data, date_str, out_month);
       return true;
    }
    else if(res == 404)
@@ -355,8 +407,9 @@ string FormatVolume(double value)
 //+------------------------------------------------------------------+
 //| Parse CSV contents and draw levels                               |
 //+------------------------------------------------------------------+
-void ParseCSV(const string &csv_data, string date_str)
+void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
 {
+   out_global_month = "UNKNOWN";
    string clean_csv = csv_data;
    StringReplace(clean_csv, "\r", "");
    
@@ -414,7 +467,7 @@ void ParseCSV(const string &csv_data, string date_str)
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
       
-      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low
+      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low,Global_Month,Daily_Month
       if(total_cols < 12)
          continue;
          
@@ -432,13 +485,17 @@ void ParseCSV(const string &csv_data, string date_str)
       double g_put_settle = StringToDouble(columns[10]);
       double g_put_oi = StringToDouble(columns[11]);
       
-      // Read volatility zones from the first matching row
+      // Read volatility zones and months from the first matching row
       if(total_cols >= 16 && r68_high == 0.0)
       {
          r68_high = StringToDouble(columns[12]);
          r68_low = StringToDouble(columns[13]);
          r95_high = StringToDouble(columns[14]);
          r95_low = StringToDouble(columns[15]);
+         if(total_cols >= 18)
+         {
+            out_global_month = columns[16];
+         }
       }
       
       if(MathAbs(total_gex) >= InpMinGexFilter)
@@ -568,9 +625,13 @@ void ParseCSV(const string &csv_data, string date_str)
       double gex_ratio = (max_abs_gex > 0) ? (MathAbs(gex) / max_abs_gex) : 1.0;
       double ag_ratio = (max_abs_gamma > 0) ? (ag / max_abs_gamma) : 1.0;
       
-      if(max_abs_gex > 0)
+      if(InpUseDynamicWidth && max_abs_gex > 0)
       {
          line_width = InpBaseLineWidth + (int)MathRound(gex_ratio * 3.0); // Maps [0, 1] width offset
+      }
+      else
+      {
+         line_width = InpBaseLineWidth;
       }
       
       datetime gex_line_end = time_start + (int)((time_end - time_start) * MathMax(0.1, gex_ratio));
@@ -699,7 +760,7 @@ void ParseCSV(const string &csv_data, string date_str)
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
             ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
-            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
             ObjectSetInteger(0, name, OBJPROP_BACK, true);
@@ -763,7 +824,7 @@ void ParseCSV(const string &csv_data, string date_str)
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
             ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
-            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
             ObjectSetInteger(0, name, OBJPROP_BACK, true);

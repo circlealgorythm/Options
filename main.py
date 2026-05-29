@@ -171,6 +171,11 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
     summary['R95_High'] = spot + 2.0 * sigma_1d
     summary['R95_Low'] = spot - 2.0 * sigma_1d
     
+    # Add active contract month columns
+    summary['Global_Month'] = max_month if not global_df.empty else 'UNKNOWN'
+    active_daily_month = daily_df['Contract_Month'].iloc[0] if not daily_df.empty and 'Contract_Month' in daily_df.columns else 'UNKNOWN'
+    summary['Daily_Month'] = active_daily_month
+    
     # Save to CSV
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     out_file = os.path.join(output_dir, f"GEX_{currency}USD_{today_str}.csv")
