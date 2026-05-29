@@ -46,8 +46,8 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
         print(f"Error: PDF path {pdf_path} does not exist.")
         return pd.DataFrame()
         
-    expiry_idx = 0
-    last_strike = -1.0
+    current_contract_month = "UNKNOWN"
+    current_option_type = "UNKNOWN"
     
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -58,8 +58,26 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
             lines = text.split('\n')
             for line in lines:
                 parts = line.split()
-                if not parts or not parts[0].isdigit():
+                if not parts:
                     continue
+                    
+                # Look for section headers indicating option type and contract month
+                # Example: "JUN26 2EU OPT" or "EUU OPT"
+                if not parts[0].isdigit() and "OPT" in parts:
+                    opt_idx = parts.index("OPT")
+                    if opt_idx >= 1:
+                        current_option_type = parts[opt_idx - 1]
+                    
+                    for p in parts:
+                        if re.match(r'^[A-Z]{3}\d{2}$', p):
+                            current_contract_month = p
+                            break
+                            
+                    continue
+                
+                if not parts[0].isdigit():
+                    continue
+                    
                 if len(parts) < 8:
                     continue
                     
@@ -69,10 +87,6 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     strike /= 10000.0
                 else:
                     strike /= 1000.0
-                    
-                if last_strike > 0 and strike < last_strike - 0.005:
-                    expiry_idx += 1
-                last_strike = strike
                     
                 # Find Delta index
                 delta_idx = -1
@@ -107,7 +121,8 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     "Delta": delta,
                     "OI": oi,
                     "Is_Call": is_call_only,
-                    "Expiry_Idx": expiry_idx
+                    "Contract_Month": current_contract_month,
+                    "Option_Type": current_option_type
                 })
                 
     return pd.DataFrame(data)

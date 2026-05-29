@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 data/*.pdf
+data_test.pdf
 .env
 .idea/
 .vscode/

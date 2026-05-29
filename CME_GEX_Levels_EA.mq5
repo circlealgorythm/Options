@@ -18,7 +18,8 @@ input group "--- Display Settings ---"
 input int      InpHistoryDays = 30;                // Days of history to load
 input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
 input int      InpBaseLineWidth = 1;               // Base Line Width
-input int      InpForwardPoints = 0;               // Forward Point (in points)
+input int      InpForwardPoints = 0;               // Forward Point (Manual Shift in points)
+input bool     InpAutoSpotAdjust= true;            // Auto-adjust to Spot Price (Overrides Manual)
 input color    InpColorCall   = clrMediumSeaGreen; // Positive GEX Color (Support)
 input color    InpColorPut    = clrCrimson;        // Negative GEX Color (Resistance)
 input color    InpColorGamma  = clrDeepSkyBlue;    // Max Absolute Gamma Color
@@ -35,6 +36,8 @@ input color    InpColorAGLine = C'0,191,255';      // AG Line Color (DeepSkyBlue
 input group "--- Risk Premiums (2nd Order - MDD) ---"
 input color    InpColorMDDCall= clrRoyalBlue;      // Call MDD (Breakeven) Color
 input color    InpColorMDDPut = clrOrangeRed;      // Put MDD (Breakeven) Color
+input int      InpWidthDailyMDD   = 1;             // Daily MDD Line Width
+input int      InpWidthGlobalMDD  = 3;             // Global MDD Line Width
 
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
@@ -132,7 +135,7 @@ void UpdateVisibility()
       if(StringSubstr(name, 0, StringLen(g_obj_prefix)) == g_obj_prefix)
       {
          bool is_ag = (StringFind(name, "_AGL") >= 0);
-         bool is_mdd_r_zones = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0 || StringFind(name, "_CMD") >= 0 || StringFind(name, "_PMD") >= 0);
+         bool is_mdd_r_zones = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0 || StringFind(name, "CMD") >= 0 || StringFind(name, "PMD") >= 0);
          
          if(is_ag)
          {
@@ -224,6 +227,25 @@ void UpdateLevels()
    UpdateVisibility();
    ChartRedraw(0);
    Print("Levels update completed. Successfully loaded data for ", success_count, " days.");
+   
+   // --- DEBUG BLOCK ---
+   int cme_obj_count = 0;
+   int total_obj = ObjectsTotal(0);
+   for(int j = total_obj - 1; j >= 0; j--)
+   {
+      string name = ObjectName(0, j);
+      if(StringSubstr(name, 0, StringLen(g_obj_prefix)) == g_obj_prefix)
+      {
+         cme_obj_count++;
+         if(cme_obj_count <= 10)
+         {
+            double price1 = ObjectGetDouble(0, name, OBJPROP_PRICE, 0);
+            datetime time1 = (datetime)ObjectGetInteger(0, name, OBJPROP_TIME, 0);
+            PrintFormat("Debug Obj: %s | Type: %d | Time: %s | Price: %.5f", name, (int)ObjectGetInteger(0, name, OBJPROP_TYPE), TimeToString(time1), price1);
+         }
+      }
+   }
+   PrintFormat("Debug Total Objects with Prefix '%s': %d (out of %d total chart objects)", g_obj_prefix, cme_obj_count, total_obj);
 }
 
 //+------------------------------------------------------------------+
@@ -237,8 +259,11 @@ bool FetchAndParseDate(string date_str)
    int file_handle = FileOpen(local_file_path, FILE_READ|FILE_TXT|FILE_ANSI);
    if(file_handle != INVALID_HANDLE)
    {
-      ulong file_size = FileSize(file_handle);
-      string csv_data = FileReadString(file_handle, (int)file_size);
+      string csv_data = "";
+      while(!FileIsEnding(file_handle))
+      {
+         csv_data += FileReadString(file_handle) + "\n";
+      }
       FileClose(file_handle);
       
       Print("Loaded levels locally from: Files\\", local_file_path);
@@ -337,8 +362,16 @@ void ParseCSV(const string &csv_data, string date_str)
    
    string lines[];
    int total_lines = StringSplit(clean_csv, '\n', lines);
+   PrintFormat("ParseCSV Debug: date_str=%s | csv_data length=%d | total_lines=%d", date_str, StringLen(csv_data), total_lines);
    if(total_lines <= 1)
+   {
+      Print("ParseCSV Debug Error: total_lines <= 1, aborting.");
       return;
+   }
+   
+   PrintFormat("ParseCSV Debug: Line 0 (Header) = '%s'", lines[0]);
+   if(total_lines > 1)
+      PrintFormat("ParseCSV Debug: Line 1 (First data row) = '%s'", lines[1]);
       
    double max_abs_gex = 0.0;
    double max_abs_gamma = 0.0;
@@ -460,13 +493,31 @@ void ParseCSV(const string &csv_data, string date_str)
       }
    }
    
+   PrintFormat("ParseCSV Debug: finished loop, valid_rows count = %d", valid_rows);
    if(valid_rows == 0)
+   {
+      Print("ParseCSV Debug: valid_rows is 0, aborting drawing.");
       return;
+   }
       
    datetime time_start = StringToTime(date_str + " 00:00:00");
    datetime time_end = StringToTime(date_str + " 23:59:59");
    
    double fw_offset = InpForwardPoints * Point();
+   
+   if(InpAutoSpotAdjust && r68_high > 0.0 && r68_low > 0.0)
+   {
+      double futures_price = (r68_high + r68_low) / 2.0;
+      int shift = iBarShift(Symbol(), PERIOD_D1, time_start);
+      if(shift >= 0)
+      {
+         double spot_price = iClose(Symbol(), PERIOD_D1, shift);
+         if(spot_price > 0)
+         {
+            fw_offset = spot_price - futures_price;
+         }
+      }
+   }
    
    // Draw volatility zones first (so they are in the background)
    if(InpDrawZones && r68_high > 0.0 && r68_low > 0.0)
@@ -647,7 +698,7 @@ void ParseCSV(const string &csv_data, string date_str)
             ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
-            ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
@@ -679,7 +730,7 @@ void ParseCSV(const string &csv_data, string date_str)
             ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
-            ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthGlobalMDD);
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
@@ -711,7 +762,7 @@ void ParseCSV(const string &csv_data, string date_str)
             ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
-            ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
@@ -743,7 +794,7 @@ void ParseCSV(const string &csv_data, string date_str)
             ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
-            ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthGlobalMDD);
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
