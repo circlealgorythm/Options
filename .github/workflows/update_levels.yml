@@ -2,7 +2,7 @@ name: Update CME Levels Daily
 
 on:
   schedule:
-    - cron: '0 23 * * 1-5' # Runs at 23:00 UTC Monday-Friday
+    - cron: '0 5 * * 1-5' # Runs at 05:00 UTC Monday-Friday (08:00 MSK)
   workflow_dispatch: # Allows manual trigger
 
 jobs:
