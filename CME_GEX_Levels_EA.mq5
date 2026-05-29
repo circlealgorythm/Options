@@ -762,7 +762,7 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       {
          double settle = rows[i].daily_call_settle;
          if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
-         double mdd = chart_price + settle;
+         double mdd = strike + settle;
          string name = obj_name + "_DCMD";
          ObjectDelete(0, name);
          if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
@@ -826,7 +826,7 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       {
          double settle = rows[i].daily_put_settle;
          if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
-         double mdd = chart_price - settle;
+         double mdd = strike - settle;
          string name = obj_name + "_DPMD";
          ObjectDelete(0, name);
          if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
