@@ -48,6 +48,7 @@ input ENUM_LINE_STYLE InpStyleNewMonth = STYLE_DASH;   // Option Month Line Styl
 
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
+input bool     InpFillZones   = true;              // Fill volatility zones with color (false = draw borders only)
 input color    InpColorR68    = C'235,245,255';    // R68 Zone Color (68% probability)
 input color    InpColorR95    = C'240,255,245';    // R95 Zone Color (95% probability)
 
@@ -599,7 +600,7 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       if(ObjectCreate(0, r95_name, OBJ_RECTANGLE, 0, time_start, chart_r95_high, time_end, chart_r95_low))
       {
          ObjectSetInteger(0, r95_name, OBJPROP_COLOR, InpColorR95);
-         ObjectSetInteger(0, r95_name, OBJPROP_FILL, true);
+         ObjectSetInteger(0, r95_name, OBJPROP_FILL, InpFillZones);
          ObjectSetInteger(0, r95_name, OBJPROP_BACK, true);
          ObjectSetInteger(0, r95_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, r95_name, OBJPROP_HIDDEN, true);
@@ -611,7 +612,7 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       if(ObjectCreate(0, r68_name, OBJ_RECTANGLE, 0, time_start, chart_r68_high, time_end, chart_r68_low))
       {
          ObjectSetInteger(0, r68_name, OBJPROP_COLOR, InpColorR68);
-         ObjectSetInteger(0, r68_name, OBJPROP_FILL, true);
+         ObjectSetInteger(0, r68_name, OBJPROP_FILL, InpFillZones);
          ObjectSetInteger(0, r68_name, OBJPROP_BACK, true);
          ObjectSetInteger(0, r68_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, r68_name, OBJPROP_HIDDEN, true);
