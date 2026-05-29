@@ -49,8 +49,10 @@ input ENUM_LINE_STYLE InpStyleNewMonth = STYLE_DASH;   // Option Month Line Styl
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
 input bool     InpFillZones   = true;              // Fill volatility zones with color (false = draw borders only)
-input color    InpColorR68    = C'248,238,238';    // R68 Zone Color (68% probability)
-input color    InpColorR95    = C'252,255,252';    // R95 Zone Color (95% probability)
+input color    InpColorR68    = C'240,120,120';    // R68 Zone Tint Color (68% probability)
+input color    InpColorR95    = C'130,220,150';    // R95 Zone Tint Color (95% probability)
+input int      InpR68TintPct  = 14;                // R68 tint strength against chart background
+input int      InpR95TintPct  = 7;                 // R95 tint strength against chart background
 
 //--- Global Variables
 datetime       g_last_update = 0;
@@ -493,6 +495,29 @@ string FormatVolume(double value)
 }
 
 //+------------------------------------------------------------------+
+//| Blend a tint color into the current chart background             |
+//+------------------------------------------------------------------+
+color BlendWithChartBackground(color tint, int tint_pct)
+{
+   long bg_value = ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   int pct = MathMax(0, MathMin(100, tint_pct));
+   
+   int tint_r = (int)(tint & 0xFF);
+   int tint_g = (int)((tint >> 8) & 0xFF);
+   int tint_b = (int)((tint >> 16) & 0xFF);
+   
+   int bg_r = (int)(bg_value & 0xFF);
+   int bg_g = (int)((bg_value >> 8) & 0xFF);
+   int bg_b = (int)((bg_value >> 16) & 0xFF);
+   
+   int r = (bg_r * (100 - pct) + tint_r * pct) / 100;
+   int g = (bg_g * (100 - pct) + tint_g * pct) / 100;
+   int b = (bg_b * (100 - pct) + tint_b * pct) / 100;
+   
+   return (color)(r | (g << 8) | (b << 16));
+}
+
+//+------------------------------------------------------------------+
 //| Parse CSV contents and draw levels                               |
 //+------------------------------------------------------------------+
 bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
@@ -689,12 +714,14 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       double chart_r95_low = r95_low + fw_offset;
       double chart_r68_high = r68_high + fw_offset;
       double chart_r68_low = r68_low + fw_offset;
+      color zone_r95_color = BlendWithChartBackground(InpColorR95, InpR95TintPct);
+      color zone_r68_color = BlendWithChartBackground(InpColorR68, InpR68TintPct);
       
       string r95_name = StringFormat("%s%s_%s_R95", g_obj_prefix, g_base_currency, date_str);
       ObjectDelete(0, r95_name);
       if(ObjectCreate(0, r95_name, OBJ_RECTANGLE, 0, time_start, chart_r95_high, time_end, chart_r95_low))
       {
-         ObjectSetInteger(0, r95_name, OBJPROP_COLOR, InpColorR95);
+         ObjectSetInteger(0, r95_name, OBJPROP_COLOR, zone_r95_color);
          ObjectSetInteger(0, r95_name, OBJPROP_FILL, InpFillZones);
          ObjectSetInteger(0, r95_name, OBJPROP_BACK, true);
          ObjectSetInteger(0, r95_name, OBJPROP_SELECTABLE, false);
@@ -708,7 +735,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       ObjectDelete(0, r68_name);
       if(ObjectCreate(0, r68_name, OBJ_RECTANGLE, 0, time_start, chart_r68_high, time_end, chart_r68_low))
       {
-         ObjectSetInteger(0, r68_name, OBJPROP_COLOR, InpColorR68);
+         ObjectSetInteger(0, r68_name, OBJPROP_COLOR, zone_r68_color);
          ObjectSetInteger(0, r68_name, OBJPROP_FILL, InpFillZones);
          ObjectSetInteger(0, r68_name, OBJPROP_BACK, true);
          ObjectSetInteger(0, r68_name, OBJPROP_SELECTABLE, false);
