@@ -49,8 +49,8 @@ input ENUM_LINE_STYLE InpStyleNewMonth = STYLE_DASH;   // Option Month Line Styl
 input group "--- Volatility Zones ---"
 input bool     InpDrawZones   = true;              // Draw volatility zones R68/R95
 input bool     InpFillZones   = true;              // Fill volatility zones with color (false = draw borders only)
-input color    InpColorR68    = C'235,245,255';    // R68 Zone Color (68% probability)
-input color    InpColorR95    = C'240,255,245';    // R95 Zone Color (95% probability)
+input color    InpColorR68    = C'244,224,224';    // R68 Zone Color (68% probability)
+input color    InpColorR95    = C'248,255,248';    // R95 Zone Color (95% probability)
 
 //--- Global Variables
 datetime       g_last_update = 0;
@@ -103,23 +103,34 @@ void CreateButtons()
 {
    ObjectCreate(0, "Btn_ShowGEX", OBJ_BUTTON, 0, 0, 0);
    ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YDISTANCE, 20);
-   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XSIZE, 100);
-   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YSIZE, 25);
-   ObjectSetString(0, "Btn_ShowGEX", OBJPROP_TEXT, "Hide GEX");
-   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_XSIZE, 54);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_CORNER, CORNER_LEFT_LOWER);
    ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_HIDDEN, true);
    
    ObjectCreate(0, "Btn_ShowAG", OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XDISTANCE, 120);
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YDISTANCE, 20);
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XSIZE, 100);
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YSIZE, 25);
-   ObjectSetString(0, "Btn_ShowAG", OBJPROP_TEXT, "Hide AG");
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XDISTANCE, 70);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XSIZE, 42);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_CORNER, CORNER_LEFT_LOWER);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_HIDDEN, true);
+
+   UpdateToggleButton("Btn_ShowGEX", "GEX", g_show_gex);
+   UpdateToggleButton("Btn_ShowAG", "AG", g_show_ag);
    
    ChartRedraw(0);
+}
+
+void UpdateToggleButton(string name, string label, bool enabled)
+{
+   ObjectSetString(0, name, OBJPROP_TEXT, label);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlack);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, enabled ? C'220,242,224' : C'246,220,220');
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, enabled ? C'100,170,110' : C'190,105,105');
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
 }
 
 //+------------------------------------------------------------------+
@@ -144,8 +155,13 @@ void UpdateVisibility()
       {
          bool is_ag = (StringFind(name, "_AGL") >= 0);
          bool is_mdd_r_zones = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0 || StringFind(name, "CMD") >= 0 || StringFind(name, "PMD") >= 0);
+         bool is_status = (StringFind(name, "UpdateStatus") >= 0);
          
-         if(is_ag)
+         if(is_status)
+         {
+            ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+         }
+         else if(is_ag)
          {
             ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, g_show_ag ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
          }
@@ -169,14 +185,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       if(sparam == "Btn_ShowGEX")
       {
          g_show_gex = !g_show_gex;
-         ObjectSetString(0, "Btn_ShowGEX", OBJPROP_TEXT, g_show_gex ? "Hide GEX" : "Show GEX");
+         UpdateToggleButton("Btn_ShowGEX", "GEX", g_show_gex);
          UpdateVisibility();
          ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_STATE, false); // Reset button state
       }
       else if(sparam == "Btn_ShowAG")
       {
          g_show_ag = !g_show_ag;
-         ObjectSetString(0, "Btn_ShowAG", OBJPROP_TEXT, g_show_ag ? "Hide AG" : "Show AG");
+         UpdateToggleButton("Btn_ShowAG", "AG", g_show_ag);
          UpdateVisibility();
          ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_STATE, false); // Reset button state
       }
@@ -683,7 +699,9 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetInteger(0, r95_name, OBJPROP_BACK, true);
          ObjectSetInteger(0, r95_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, r95_name, OBJPROP_HIDDEN, true);
-         ObjectSetString(0, r95_name, OBJPROP_TOOLTIP, StringFormat("Date: %s | R95 Zone [%.4f - %.4f]", date_str, r95_low, r95_high));
+         ObjectSetString(0, r95_name, OBJPROP_TOOLTIP,
+                         StringFormat("Date: %s | R95 Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
+                                      date_str, chart_r95_low, chart_r95_high, r95_low, r95_high));
       }
       
       string r68_name = StringFormat("%s%s_%s_R68", g_obj_prefix, g_base_currency, date_str);
@@ -695,7 +713,9 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetInteger(0, r68_name, OBJPROP_BACK, true);
          ObjectSetInteger(0, r68_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, r68_name, OBJPROP_HIDDEN, true);
-         ObjectSetString(0, r68_name, OBJPROP_TOOLTIP, StringFormat("Date: %s | R68 Zone [%.4f - %.4f]", date_str, r68_low, r68_high));
+         ObjectSetString(0, r68_name, OBJPROP_TOOLTIP,
+                         StringFormat("Date: %s | R68 Zone chart/spot [%.5f - %.5f] | futures [%.5f - %.5f]",
+                                      date_str, chart_r68_low, chart_r68_high, r68_low, r68_high));
       }
    }
    
@@ -822,18 +842,21 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetInteger(0, text_obj_name, OBJPROP_HIDDEN, true);
       }
       
-      // Gray futures original price text label
+      // Gray chart/spot price label after forward adjustment. Raw futures strike is kept in the tooltip.
       string strike_txt_name = obj_name + "_FUT";
       ObjectDelete(0, strike_txt_name);
       if(ObjectCreate(0, strike_txt_name, OBJ_TEXT, 0, time_start + 7200, chart_price))
       {
-         ObjectSetString(0, strike_txt_name, OBJPROP_TEXT, StringFormat("%.4f", strike));
+         ObjectSetString(0, strike_txt_name, OBJPROP_TEXT, StringFormat("%.5f", chart_price));
          ObjectSetInteger(0, strike_txt_name, OBJPROP_COLOR, clrGray);
          ObjectSetInteger(0, strike_txt_name, OBJPROP_FONTSIZE, 8);
          ObjectSetString(0, strike_txt_name, OBJPROP_FONT, "Consolas");
          ObjectSetInteger(0, strike_txt_name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
          ObjectSetInteger(0, strike_txt_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, strike_txt_name, OBJPROP_HIDDEN, true);
+         ObjectSetString(0, strike_txt_name, OBJPROP_TOOLTIP,
+                         StringFormat("Chart/spot price: %.5f | Futures strike: %.5f | Forward offset: %.5f",
+                                      chart_price, strike, fw_offset));
       }
       
       // Daily Call MDD
@@ -850,7 +873,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
             ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
-            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
             ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -859,8 +882,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
             ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 5400, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "D_CALL");
-            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, clrBlack);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
@@ -914,7 +937,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
             ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
             ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
-            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
+            ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
             ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -923,8 +946,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
             ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 5400, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "D_PUT");
-            ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, clrBlack);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
