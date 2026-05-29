@@ -85,12 +85,13 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     strike /= 1000.0
                     
                 # Find Delta index (scanning from right to left to avoid Open/High/Low prices)
+                # Note: Delta must start with a dot or 0. to avoid matching whole number volume/OI (e.g. 253)
                 delta_idx = -1
                 for idx in range(len(parts) - 1, 0, -1):
                     part = parts[idx]
                     # Delta is usually a clean decimal like .146 or 0.146.
                     # Avoid Bid/Ask quotes containing letters A/B
-                    if (re.match(r'^\.?\d{3}$', part) or re.match(r'^0\.\d{3}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
+                    if (re.match(r'^\.\d{3}$', part) or re.match(r'^0\.\d{3}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
                         delta_idx = idx
                         break
                 if delta_idx == -1:
@@ -98,19 +99,36 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     
                 delta = clean_value(parts[delta_idx])
                 
-                # Find Settle index (scanning left from delta)
+                # Settle is always at delta_idx - 2, and Net Change is at delta_idx - 1
                 settle = 0.0
-                for idx in range(delta_idx - 1, 0, -1):
-                    part = parts[idx]
-                    if '.' in part or part in ['CAB', '----'] or ('-' in part and len(part) > 1 and '.' in part) or ('+' in part and len(part) > 1 and '.' in part):
-                        # Handle cases like '.03080-0.00030' or '.100-7' by splitting at - or +
-                        clean_part = part
-                        for sign in ['-', '+']:
-                            if sign in part and part.index(sign) > 0:
-                                clean_part = part.split(sign)[0]
-                                break
-                        settle = clean_value(clean_part)
-                        break
+                if delta_idx >= 2:
+                    settle_str = parts[delta_idx - 2]
+                    clean_part = settle_str
+                    # Handle cases like '.03080-0.00030' or '.100-7' by splitting at - or +
+                    for sign in ['-', '+']:
+                        if sign in settle_str and settle_str.index(sign) > 0:
+                            clean_part = settle_str.split(sign)[0]
+                            break
+                    raw_settle = clean_value(clean_part)
+                    
+                    # Scale the settle price based on currency and format
+                    if currency == 'EUR':
+                        is_decimal_quoted = False
+                        if '.' in clean_part:
+                            num_part = re.sub(r'[^\d.]', '', clean_part).strip()
+                            if '.' in num_part:
+                                after_dot = num_part.split('.')[1]
+                                if len(after_dot) >= 5:
+                                    is_decimal_quoted = True
+                        
+                        if is_decimal_quoted:
+                            settle = raw_settle
+                        else:
+                            settle = raw_settle / 1000.0
+                    elif currency == 'GBP':
+                        settle = raw_settle / 100.0
+                    else:
+                        settle = raw_settle
                         
                 # Find Open Interest index (scanning right from delta)
                 oi = 0
