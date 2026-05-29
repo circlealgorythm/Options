@@ -62,20 +62,16 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     continue
                     
                 # Look for section headers indicating option type and contract month
-                # Example: "JUN26 2EU OPT" or "EUU OPT"
-                if not parts[0].isdigit() and "OPT" in parts:
-                    opt_idx = parts.index("OPT")
-                    if opt_idx >= 1:
-                        current_option_type = parts[opt_idx - 1]
+                if not parts[0].isdigit():
+                    if "OPT" in parts:
+                        opt_idx = parts.index("OPT")
+                        if opt_idx >= 1:
+                            current_option_type = parts[opt_idx - 1]
                     
                     for p in parts:
                         if re.match(r'^[A-Z]{3}\d{2}$', p):
                             current_contract_month = p
                             break
-                            
-                    continue
-                
-                if not parts[0].isdigit():
                     continue
                     
                 if len(parts) < 8:
@@ -88,10 +84,13 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 else:
                     strike /= 1000.0
                     
-                # Find Delta index
+                # Find Delta index (scanning from right to left to avoid Open/High/Low prices)
                 delta_idx = -1
-                for idx, part in enumerate(parts):
-                    if re.match(r'^\.?\d{3}$', part) or re.match(r'^0\.\d{3}$', part):
+                for idx in range(len(parts) - 1, 0, -1):
+                    part = parts[idx]
+                    # Delta is usually a clean decimal like .146 or 0.146.
+                    # Avoid Bid/Ask quotes containing letters A/B
+                    if (re.match(r'^\.?\d{3}$', part) or re.match(r'^0\.\d{3}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
                         delta_idx = idx
                         break
                 if delta_idx == -1:
@@ -104,7 +103,13 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 for idx in range(delta_idx - 1, 0, -1):
                     part = parts[idx]
                     if '.' in part or part in ['CAB', '----'] or ('-' in part and len(part) > 1 and '.' in part) or ('+' in part and len(part) > 1 and '.' in part):
-                        settle = clean_value(part)
+                        # Handle cases like '.03080-0.00030' or '.100-7' by splitting at - or +
+                        clean_part = part
+                        for sign in ['-', '+']:
+                            if sign in part and part.index(sign) > 0:
+                                clean_part = part.split(sign)[0]
+                                break
+                        settle = clean_value(clean_part)
                         break
                         
                 # Find Open Interest index (scanning right from delta)
