@@ -516,6 +516,49 @@ color BlendWithChartBackground(color tint, int tint_pct)
 }
 
 //+------------------------------------------------------------------+
+//| Get fixed daily spot reference with retry                        |
+//+------------------------------------------------------------------+
+double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_today, int &out_shift)
+{
+   out_shift = -1;
+   double spot_reference = 0.0;
+   
+   for(int r = 0; r < 20; r++)
+   {
+      ResetLastError();
+      int shift = iBarShift(symbol, PERIOD_D1, time_val);
+      if(shift >= 0)
+      {
+         spot_reference = iOpen(symbol, PERIOD_D1, shift);
+         if(spot_reference > 0.0)
+         {
+            out_shift = shift;
+            return spot_reference;
+         }
+      }
+      
+      // Request daily history loading
+      datetime temp[];
+      CopyTime(symbol, PERIOD_D1, 0, 1, temp);
+      
+      Sleep(20);
+   }
+   
+   // Last resort for today only. Normal path uses the fixed D1 open, so levels stay static intraday.
+   if(is_today && (out_shift < 0 || spot_reference <= 0.0))
+   {
+      int fallback_shift = iBarShift(symbol, _Period, time_val);
+      if(fallback_shift >= 0)
+         spot_reference = iOpen(symbol, _Period, fallback_shift);
+      if(spot_reference <= 0.0)
+         spot_reference = SymbolInfoDouble(symbol, SYMBOL_BID);
+      PrintFormat("Warning: D1 history for today (%s) not synchronized after retries. Using fallback spot reference %.5f.", TimeToString(time_val, TIME_DATE), spot_reference);
+   }
+   
+   return spot_reference;
+}
+
+//+------------------------------------------------------------------+
 //| Parse CSV contents and draw levels                               |
 //+------------------------------------------------------------------+
 bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
@@ -561,6 +604,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    double r68_low = 0.0;
    double r95_high = 0.0;
    double r95_low = 0.0;
+   double futures_spot = 0.0;
    
    OptionRow rows[];
    if(ArrayResize(rows, total_lines) == -1)
@@ -584,8 +628,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
       
-      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low,Global_Month,Daily_Month
-      if(total_cols < 18)
+      // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low,Global_Month,Daily_Month,Futures_Spot
+      if(total_cols < 19)
          continue;
          
       double strike = StringToDouble(columns[1]);
@@ -612,6 +656,10 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          if(total_cols >= 18)
          {
             out_global_month = columns[16];
+         }
+         if(total_cols >= 19)
+         {
+            futures_spot = StringToDouble(columns[18]);
          }
       }
       
@@ -691,18 +739,23 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    
    double fw_offset = InpForwardPoints * Point();
    
-   if(InpAutoSpotAdjust && r68_high > 0.0 && r68_low > 0.0)
+   if(InpAutoSpotAdjust && futures_spot > 0.0)
    {
-      double futures_price = (r68_high + r68_low) / 2.0;
-      int shift = iBarShift(Symbol(), PERIOD_D1, time_start);
-      if(shift >= 0)
+      int shift = -1;
+      MqlDateTime now_dt;
+      TimeToStruct(TimeCurrent(), now_dt);
+      string today_str = StringFormat("%04d-%02d-%02d", now_dt.year, now_dt.mon, now_dt.day);
+      bool is_today = (date_str == today_str);
+      
+      double spot_price = GetDailySpotReferenceWithRetry(Symbol(), time_start, is_today, shift);
+      if(spot_price > 0.0)
       {
-         int target_shift = (shift == 0) ? 1 : shift;
-         double spot_price = iClose(Symbol(), PERIOD_D1, target_shift);
-         if(spot_price > 0)
-         {
-            fw_offset = spot_price - futures_price;
-         }
+         fw_offset = spot_price - futures_spot;
+      }
+      else
+      {
+         PrintFormat("Warning: Failed to calculate fw_offset for %s. shift=%d, spot_price=%.5f, futures_spot=%.5f. Using default fw_offset = %.5f", 
+                     date_str, shift, spot_price, futures_spot, fw_offset);
       }
    }
    

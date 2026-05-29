@@ -282,6 +282,9 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     active_daily_month = daily_df['Contract_Month'].iloc[0] if not daily_df.empty and 'Contract_Month' in daily_df.columns else 'UNKNOWN'
     summary['Daily_Month'] = active_daily_month
 
+    # Store futures spot price directly so EA doesn't derive it from R68
+    summary['Futures_Spot'] = spot
+
     validate_mdd_summary(summary, currency)
     
     # Save to CSV
