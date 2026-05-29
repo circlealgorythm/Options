@@ -349,12 +349,22 @@ bool FetchAndParseDate(string date_str, string &out_month)
    ResetLastError();
    int res = WebRequest("GET", url, headers, timeout, post, result_data, result_headers);
    
-   if(res == 200)
-   {
-      string csv_data = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
-      ParseCSV(csv_data, date_str, out_month);
-      return true;
-   }
+    if(res == 200)
+    {
+       string csv_data = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+       
+       // Save downloaded CSV locally to prevent redundant WebRequests on timeframe switches
+       int write_handle = FileOpen(local_file_path, FILE_WRITE|FILE_TXT|FILE_ANSI);
+       if(write_handle != INVALID_HANDLE)
+       {
+          FileWriteString(write_handle, csv_data);
+          FileClose(write_handle);
+          Print("Saved downloaded levels locally to: Files\\", local_file_path);
+       }
+       
+       ParseCSV(csv_data, date_str, out_month);
+       return true;
+    }
    else if(res == 404)
    {
       return false;
