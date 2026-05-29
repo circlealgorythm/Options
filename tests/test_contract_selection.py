@@ -2,7 +2,7 @@ import datetime
 
 import pandas as pd
 
-from main import copy_csv_to_mt5, select_daily_contracts, validate_mdd_summary
+from main import copy_csv_to_mt5, select_daily_contracts, select_near_spot_mdd_settle, validate_mdd_summary
 from src.parser import parse_bulletin_date_from_text
 
 
@@ -126,3 +126,31 @@ def test_parse_bulletin_date_from_header_text():
     text = "PG27 BULLETIN # 101@ BRITISH POUND CALL OPTIONS Thu, May 28, 2026 PG27"
 
     assert parse_bulletin_date_from_text(text) == datetime.date(2026, 5, 28)
+
+
+def test_daily_mdd_selects_nearest_call_above_spot_instead_of_max_oi():
+    calc_df = make_rows(
+        [
+            ("MGM", "JUN26", 1.3420, 0, 0, 55, 0, 0.0073, 0.0),
+            ("MGM", "JUN26", 1.3800, 0, 0, 640, 0, 0.0003, 0.0),
+        ]
+    )
+
+    selected = select_near_spot_mdd_settle(calc_df, "Call", 1.3411)
+
+    assert selected.iloc[0]["Strike"] == 1.3420
+    assert selected.iloc[0]["Call_Settle"] == 0.0073
+
+
+def test_daily_mdd_selects_nearest_put_below_spot_instead_of_max_oi():
+    calc_df = make_rows(
+        [
+            ("MGM", "JUN26", 1.3400, 0, 0, 0, 59, 0.0, 0.0051),
+            ("MGM", "JUN26", 1.3250, 0, 0, 0, 911, 0.0, 0.0015),
+        ]
+    )
+
+    selected = select_near_spot_mdd_settle(calc_df, "Put", 1.3411)
+
+    assert selected.iloc[0]["Strike"] == 1.3400
+    assert selected.iloc[0]["Put_Settle"] == 0.0051

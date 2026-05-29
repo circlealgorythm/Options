@@ -152,6 +152,33 @@ def validate_mdd_summary(summary, currency):
         raise RuntimeError(f"{currency} summary is missing required MDD data: {', '.join(missing)}")
 
 
+def select_near_spot_mdd_settle(df, type_prefix, spot_price):
+    oi_col = f'{type_prefix}_OI'
+    settle_col = f'{type_prefix}_Settle'
+    if df.empty:
+        return pd.DataFrame(columns=['Strike', settle_col, oi_col])
+
+    valid_df = df[(df[oi_col] > 0) & (df[settle_col] > 0.0)].copy()
+    if valid_df.empty:
+        return pd.DataFrame(columns=['Strike', settle_col, oi_col])
+
+    if type_prefix == 'Call':
+        preferred = valid_df[valid_df['Strike'] >= spot_price].copy()
+    else:
+        preferred = valid_df[valid_df['Strike'] <= spot_price].copy()
+
+    if preferred.empty:
+        preferred = valid_df
+
+    preferred['Distance_To_Spot'] = (preferred['Strike'] - spot_price).abs()
+    preferred.sort_values(
+        ['Distance_To_Spot', oi_col, settle_col],
+        ascending=[True, False, False],
+        inplace=True,
+    )
+    return preferred.iloc[[0]][['Strike', settle_col, oi_col]]
+
+
 def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     if raw_df.empty:
         print(f"No raw data for {currency}")
@@ -252,7 +279,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             idx_max = valid_df[oi_col].idxmax()
             return valid_df.loc[[idx_max], ['Strike', settle_col, oi_col]]
         return pd.DataFrame(columns=['Strike', settle_col, oi_col])
-        
+
     # Determine Global DF
     max_month = 'UNKNOWN'
     global_codes = ['EUU', 'GBU']
@@ -267,8 +294,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     # Determine Daily DF
     daily_df = select_daily_contracts(calc_df, currency, as_of_date)
     
-    daily_call = get_max_oi_settle(daily_df, 'Call').rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
-    daily_put = get_max_oi_settle(daily_df, 'Put').rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
+    daily_call = select_near_spot_mdd_settle(daily_df, 'Call', spot).rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
+    daily_put = select_near_spot_mdd_settle(daily_df, 'Put', spot).rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
     
     global_call = get_max_oi_settle(global_df, 'Call').rename(columns={'Call_OI': 'Global_Call_OI', 'Call_Settle': 'Global_Call_Settle'})
     global_put = get_max_oi_settle(global_df, 'Put').rename(columns={'Put_OI': 'Global_Put_OI', 'Put_Settle': 'Global_Put_Settle'})
@@ -333,15 +360,17 @@ if __name__ == "__main__":
     # Step 2: Parse and process EUR data
     if eur_ok:
         eur_bulletin_date = extract_bulletin_date(eur_dest) or datetime.date.today()
-        print(f"[EUR] CME bulletin trade date: {eur_bulletin_date}")
+        session_date = datetime.date.today()
+        print(f"[EUR] CME bulletin trade date: {eur_bulletin_date}; session date: {session_date}")
         eur_raw = parse_cme_pdf(eur_dest, "EUR", is_call_only=None)
-        calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR, eur_bulletin_date)
+        calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR, session_date)
         
     # Step 3: Parse and process GBP data
     if gbp_call_ok and gbp_put_ok:
         gbp_bulletin_date = extract_bulletin_date(gbp_call_dest) or extract_bulletin_date(gbp_put_dest) or datetime.date.today()
-        print(f"[GBP] CME bulletin trade date: {gbp_bulletin_date}")
+        session_date = datetime.date.today()
+        print(f"[GBP] CME bulletin trade date: {gbp_bulletin_date}; session date: {session_date}")
         gbp_calls = parse_cme_pdf(gbp_call_dest, "GBP", is_call_only=True)
         gbp_puts = parse_cme_pdf(gbp_put_dest, "GBP", is_call_only=False)
         gbp_raw = pd.concat([gbp_calls, gbp_puts])
-        calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR, gbp_bulletin_date)
+        calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR, session_date)
