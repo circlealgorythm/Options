@@ -776,37 +776,49 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       datetime ag_line_end = time_start + (int)((time_end - time_start) * MathMax(0.2, ag_ratio));
       
       string type_prefix = "";
-      
-      // Global CALL Market Boundary (1st Order)
-      if(strike == max_global_call_oi_strike && max_global_call_oi > 0)
+      bool is_global_call = (strike == max_global_call_oi_strike && max_global_call_oi > 0);
+      bool is_global_put = (strike == max_global_put_oi_strike && max_global_put_oi > 0);
+      bool is_daily_call = (strike == max_daily_call_oi_strike && max_daily_call_oi > 0);
+      bool is_daily_put = (strike == max_daily_put_oi_strike && max_daily_put_oi > 0);
+      bool is_max_ag = (strike == max_gamma_strike && max_abs_gamma > 0);
+
+      if(is_global_call && is_global_put)
+      {
+         line_color = (max_global_put_oi >= max_global_call_oi) ? InpColorPutMarket : InpColorCallMarket;
+         line_width = InpWidthMarket;
+         type_prefix = "GLOB CALL/PUT ";
+      }
+      else if(is_global_call)
       {
          line_color = InpColorCallMarket;
          line_width = InpWidthMarket;
          type_prefix = "GLOB CALL ";
       }
-      // Global PUT Market Boundary (1st Order)
-      else if(strike == max_global_put_oi_strike && max_global_put_oi > 0)
+      else if(is_global_put)
       {
          line_color = InpColorPutMarket;
          line_width = InpWidthMarket;
          type_prefix = "GLOB PUT ";
       }
-      // Daily CALL Market Boundary
-      else if(strike == max_daily_call_oi_strike && max_daily_call_oi > 0)
+      else if(is_daily_call && is_daily_put)
+      {
+         line_color = (max_daily_put_oi >= max_daily_call_oi) ? InpColorPutMarket : InpColorCallMarket;
+         line_width = 2;
+         type_prefix = "DLY CALL/PUT ";
+      }
+      else if(is_daily_call)
       {
          line_color = InpColorCallMarket;
          line_width = 2;
          type_prefix = "DLY CALL ";
       }
-      // Daily PUT Market Boundary
-      else if(strike == max_daily_put_oi_strike && max_daily_put_oi > 0)
+      else if(is_daily_put)
       {
          line_color = InpColorPutMarket;
          line_width = 2;
          type_prefix = "DLY PUT ";
       }
-      // Highlight absolute maximum gamma level if it's not a market boundary
-      else if(strike == max_gamma_strike && max_abs_gamma > 0)
+      else if(is_max_ag)
       {
          line_color = InpColorGamma;
          line_width = 4;
