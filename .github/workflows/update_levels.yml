@@ -25,6 +25,10 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Run regression tests
+        run: |
+          pytest -q tests
+
       - name: Run CME Parsing and Math Pipeline
         run: |
           python main.py

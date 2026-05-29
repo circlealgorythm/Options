@@ -303,25 +303,43 @@ void UpdateLevels()
 //+------------------------------------------------------------------+
 //| Download and parse CSV file for a specific date                  |
 //+------------------------------------------------------------------+
+bool TryParseLocalCSV(string local_file_path, string date_str, string &out_month, string reason)
+{
+   ResetLastError();
+   int file_handle = FileOpen(local_file_path, FILE_READ|FILE_TXT|FILE_ANSI);
+   if(file_handle == INVALID_HANDLE)
+      return false;
+
+   string csv_data = "";
+   while(!FileIsEnding(file_handle))
+   {
+      csv_data += FileReadString(file_handle) + "\n";
+   }
+   FileClose(file_handle);
+
+   Print(reason, ": Files\\", local_file_path);
+   return ParseCSV(csv_data, date_str, out_month);
+}
+
 bool FetchAndParseDate(string date_str, string &out_month)
 {
    out_month = "UNKNOWN";
-   // 1. Try to load from local file first (MQL5/Files/GEX/GEX_xxxUSD_yyyy-mm-dd.csv)
+   MqlDateTime now_dt;
+   TimeToStruct(TimeCurrent(), now_dt);
+   string today_str = StringFormat("%04d-%02d-%02d", now_dt.year, now_dt.mon, now_dt.day);
+   bool prefer_remote = (date_str == today_str);
+   
+   // For today's file, prefer the remote CSV so the 08:00 MSK automation is picked up.
+   // Older dates are loaded from the local MT5 cache first.
    string local_file_path = "GEX\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
-   ResetLastError();
-   int file_handle = FileOpen(local_file_path, FILE_READ|FILE_TXT|FILE_ANSI);
-   if(file_handle != INVALID_HANDLE)
+   if(!prefer_remote && FileIsExist(local_file_path))
    {
-      string csv_data = "";
-      while(!FileIsEnding(file_handle))
-      {
-         csv_data += FileReadString(file_handle) + "\n";
-      }
-      FileClose(file_handle);
-      
-      Print("Loaded levels locally from: Files\\", local_file_path);
-      ParseCSV(csv_data, date_str, out_month);
-      return true;
+      if(TryParseLocalCSV(local_file_path, date_str, out_month, "Loaded levels locally from"))
+         return true;
+
+      Print("Local CSV has an unsupported or stale schema, trying WebRequest fallback: Files\\", local_file_path);
+      ResetLastError();
+      FileDelete(local_file_path);
    }
    
    // 2. Fallback to GitHub WebRequest if local file is not found
@@ -354,6 +372,14 @@ bool FetchAndParseDate(string date_str, string &out_month)
     {
        string csv_data = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
        
+       if(!ParseCSV(csv_data, date_str, out_month))
+       {
+          Print("Downloaded CSV has an unsupported schema or no drawable rows: ", date_str);
+          if(prefer_remote && TryParseLocalCSV(local_file_path, date_str, out_month, "Downloaded CSV failed, using local fallback"))
+             return true;
+          return false;
+       }
+
        // Save downloaded CSV locally to prevent redundant WebRequests on timeframe switches
        int write_handle = FileOpen(local_file_path, FILE_WRITE|FILE_TXT|FILE_ANSI);
        if(write_handle != INVALID_HANDLE)
@@ -362,12 +388,12 @@ bool FetchAndParseDate(string date_str, string &out_month)
           FileClose(write_handle);
           Print("Saved downloaded levels locally to: Files\\", local_file_path);
        }
-       
-       ParseCSV(csv_data, date_str, out_month);
        return true;
     }
    else if(res == 404)
    {
+      if(prefer_remote && TryParseLocalCSV(local_file_path, date_str, out_month, "Remote CSV not found, using local fallback"))
+         return true;
       return false;
    }
    else
@@ -377,7 +403,10 @@ bool FetchAndParseDate(string date_str, string &out_month)
          Print("WebRequest failed (4014). Allow URL 'https://api.github.com' in Tools -> Options -> Expert Advisors.");
       else
          PrintFormat("WebRequest error for %s. HTTP Code: %d, MT5 Error: %d", date_str, res, err);
-         
+
+      if(prefer_remote && TryParseLocalCSV(local_file_path, date_str, out_month, "WebRequest failed, using local fallback"))
+         return true;
+      
       return false;
    }
 }
@@ -418,7 +447,7 @@ string FormatVolume(double value)
 //+------------------------------------------------------------------+
 //| Parse CSV contents and draw levels                               |
 //+------------------------------------------------------------------+
-void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
+bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
 {
    out_global_month = "UNKNOWN";
    string clean_csv = csv_data;
@@ -430,12 +459,18 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    if(total_lines <= 1)
    {
       Print("ParseCSV Debug Error: total_lines <= 1, aborting.");
-      return;
+      return false;
    }
    
    PrintFormat("ParseCSV Debug: Line 0 (Header) = '%s'", lines[0]);
    if(total_lines > 1)
       PrintFormat("ParseCSV Debug: Line 1 (First data row) = '%s'", lines[1]);
+
+   if(StringFind(lines[0], "Daily_Call_Settle") < 0 || StringFind(lines[0], "Global_Call_Settle") < 0)
+   {
+      Print("Unsupported CSV schema. Expected Daily/Global MDD columns, got: ", lines[0]);
+      return false;
+   }
       
    double max_abs_gex = 0.0;
    double max_abs_gamma = 0.0;
@@ -460,7 +495,7 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    if(ArrayResize(rows, total_lines) == -1)
    {
       Print("Error: Failed to allocate memory for CSV parsing.");
-      return;
+      return false;
    }
    
    int valid_rows = 0;
@@ -479,7 +514,7 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       int total_cols = StringSplit(line, ',', columns);
       
       // Structure: Currency,Strike,Total_GEX,Total_Abs_Gamma,Daily_Call_Settle,Daily_Call_OI,Daily_Put_Settle,Daily_Put_OI,Global_Call_Settle,Global_Call_OI,Global_Put_Settle,Global_Put_OI,R68_High,R68_Low,R95_High,R95_Low,Global_Month,Daily_Month
-      if(total_cols < 12)
+      if(total_cols < 18)
          continue;
          
       double strike = StringToDouble(columns[1]);
@@ -509,7 +544,36 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          }
       }
       
-      if(MathAbs(total_gex) >= InpMinGexFilter)
+      if(d_call_oi > max_daily_call_oi && d_call_settle > 0.0)
+      {
+         max_daily_call_oi = d_call_oi;
+         max_daily_call_oi_strike = strike;
+      }
+      
+      if(d_put_oi > max_daily_put_oi && d_put_settle > 0.0)
+      {
+         max_daily_put_oi = d_put_oi;
+         max_daily_put_oi_strike = strike;
+      }
+      
+      if(g_call_oi > max_global_call_oi && g_call_settle > 0.0)
+      {
+         max_global_call_oi = g_call_oi;
+         max_global_call_oi_strike = strike;
+      }
+      
+      if(g_put_oi > max_global_put_oi && g_put_settle > 0.0)
+      {
+         max_global_put_oi = g_put_oi;
+         max_global_put_oi_strike = strike;
+      }
+      
+      bool has_mdd_data = ((d_call_oi > 0.0 && d_call_settle > 0.0) ||
+                           (d_put_oi > 0.0 && d_put_settle > 0.0) ||
+                           (g_call_oi > 0.0 && g_call_settle > 0.0) ||
+                           (g_put_oi > 0.0 && g_put_settle > 0.0));
+      
+      if(MathAbs(total_gex) >= InpMinGexFilter || has_mdd_data)
       {
          rows[valid_rows].strike = strike;
          rows[valid_rows].total_gex = total_gex;
@@ -533,30 +597,6 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             max_gamma_strike = strike;
          }
          
-         if(d_call_oi > max_daily_call_oi)
-         {
-            max_daily_call_oi = d_call_oi;
-            max_daily_call_oi_strike = strike;
-         }
-         
-         if(d_put_oi > max_daily_put_oi)
-         {
-            max_daily_put_oi = d_put_oi;
-            max_daily_put_oi_strike = strike;
-         }
-         
-         if(g_call_oi > max_global_call_oi)
-         {
-            max_global_call_oi = g_call_oi;
-            max_global_call_oi_strike = strike;
-         }
-         
-         if(g_put_oi > max_global_put_oi)
-         {
-            max_global_put_oi = g_put_oi;
-            max_global_put_oi_strike = strike;
-         }
-            
          valid_rows++;
       }
    }
@@ -565,7 +605,14 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    if(valid_rows == 0)
    {
       Print("ParseCSV Debug: valid_rows is 0, aborting drawing.");
-      return;
+      return false;
+   }
+
+   if(max_daily_call_oi <= 0.0 || max_daily_put_oi <= 0.0)
+   {
+      PrintFormat("CSV is missing Daily MDD rows for %s. DailyCallOI=%.2f, DailyPutOI=%.2f",
+                  date_str, max_daily_call_oi, max_daily_put_oi);
+      return false;
    }
       
    datetime time_start = StringToTime(date_str + " 00:00:00");
@@ -774,13 +821,13 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, false);
             ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Daily Call MDD Premium: %.4f", settle));
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "D_MDD");
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 5400, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "D_CALL");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
@@ -806,13 +853,13 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, false);
             ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Global Call MDD Premium: %.4f", settle));
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "G_MDD");
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 9000, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "G_CALL");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDCall);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
@@ -838,13 +885,13 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASHDOT);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, false);
             ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Daily Put MDD Premium: %.4f", settle));
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "D_MDD");
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 5400, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "D_PUT");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
@@ -870,13 +917,13 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, false);
             ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Global Put MDD Premium: %.4f", settle));
             
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 7200, mdd);
-            ObjectSetString(0, txt, OBJPROP_TEXT, "G_MDD");
+            ObjectCreate(0, txt, OBJ_TEXT, 0, time_start + 9000, mdd);
+            ObjectSetString(0, txt, OBJPROP_TEXT, "G_PUT");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, InpColorMDDPut);
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
@@ -885,6 +932,8 @@ void ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          }
       }
    }
+
+   return true;
 }
 
 //+------------------------------------------------------------------+

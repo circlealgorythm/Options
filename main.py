@@ -1,12 +1,140 @@
 import os
 import datetime
 import re
+import shutil
 import pandas as pd
 import pdfplumber
 from src.parser import download_cme_bulletin, parse_cme_pdf
 from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma
 
-def calculate_gex_pipeline(raw_df, currency, output_dir):
+DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
+
+MONTH_MAP = {
+    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+    'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+    'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+}
+
+EUR_DAILY_BY_WEEKDAY = {0: 'SEC', 1: 'TEC', 2: 'WEC', 3: 'THC', 4: 'FRC'}
+GBP_DAILY_BY_WEEKDAY = {0: 'MGB', 1: 'TGB', 2: 'WGB', 3: 'SBP', 4: 'FGB'}
+
+EUR_DAILY_CODES = ['SEC', 'TEC', 'WEC', 'THC', 'FRC']
+EUR_WEEKLY_CODES = ['1EU', '2EU', '3EU', '4EU', '5EU']
+GBP_SHORT_CODES = ['MGB', 'TGB', 'WGB', 'SBP', 'FGB', 'MGM']
+GBP_WEEKLY_CODES = ['1BP', '2BP', '3BP', '4BP', '5BP']
+
+
+def month_sort_key(month):
+    if not isinstance(month, str) or len(month) < 5:
+        return (9999, 99)
+    mon = month[:3].upper()
+    try:
+        year = 2000 + int(month[3:5])
+    except ValueError:
+        return (9999, 99)
+    return (year, MONTH_MAP.get(mon, 99))
+
+
+def nearest_month(months):
+    valid_months = [m for m in months if month_sort_key(m) != (9999, 99)]
+    return sorted(valid_months, key=month_sort_key)[0] if valid_months else None
+
+
+def filter_nearest_month(df):
+    if df.empty or 'Contract_Month' not in df.columns:
+        return df
+    month = nearest_month(df['Contract_Month'].dropna().unique())
+    if month is None:
+        return df.iloc[0:0]
+    return df[df['Contract_Month'] == month]
+
+
+def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
+    target_dir = mt5_gex_dir or os.environ.get("MT5_GEX_DIR") or DEFAULT_MT5_GEX_DIR
+    if not target_dir or not os.path.isdir(target_dir):
+        print(f"MT5 GEX directory not found, skipping local copy: {target_dir}")
+        return None
+
+    target_path = os.path.join(target_dir, os.path.basename(csv_path))
+    try:
+        shutil.copy2(csv_path, target_path)
+        print(f"Copied {os.path.basename(csv_path)} to MT5 GEX directory: {target_path}")
+        return target_path
+    except OSError as exc:
+        print(f"Warning: failed to copy {csv_path} to {target_path}: {exc}")
+        return None
+
+
+def select_daily_contracts(calc_df, currency, as_of_date=None):
+    """
+    Selects short-dated option rows for Daily MDD.
+
+    The exact weekday code is preferred. If CME omits it, EUR falls back to
+    weekly 1EU-5EU contracts; GBP bulletins often use short GBP codes instead
+    of 1BP-5BP, so GBP falls back to the nearest available GBP short block.
+    """
+    if calc_df.empty:
+        return pd.DataFrame(columns=calc_df.columns)
+
+    if as_of_date is None:
+        as_of_date = datetime.date.today()
+    dow = as_of_date.weekday()
+
+    currency = currency.upper()
+    if currency == 'EUR':
+        target_code = EUR_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+
+        weekly = calc_df[calc_df['Option_Type'].isin(EUR_WEEKLY_CODES)]
+        if not weekly.empty:
+            return filter_nearest_month(weekly)
+
+        daily = calc_df[calc_df['Option_Type'].isin(EUR_DAILY_CODES)]
+        return filter_nearest_month(daily)
+
+    if currency == 'GBP':
+        target_code = GBP_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+
+        weekly = calc_df[calc_df['Option_Type'].isin(GBP_WEEKLY_CODES)]
+        if not weekly.empty:
+            return filter_nearest_month(weekly)
+
+        short = calc_df[calc_df['Option_Type'].isin(GBP_SHORT_CODES)]
+        return filter_nearest_month(short)
+
+    return pd.DataFrame(columns=calc_df.columns)
+
+
+def validate_mdd_summary(summary, currency):
+    required = [
+        ("Daily_Call", "Daily_Call_OI", "Daily_Call_Settle"),
+        ("Daily_Put", "Daily_Put_OI", "Daily_Put_Settle"),
+        ("Global_Call", "Global_Call_OI", "Global_Call_Settle"),
+        ("Global_Put", "Global_Put_OI", "Global_Put_Settle"),
+    ]
+
+    missing = []
+    for label, oi_col, settle_col in required:
+        if summary[oi_col].max() <= 0.0 or summary[settle_col].max() <= 0.0:
+            missing.append(label)
+
+    daily_month = str(summary["Daily_Month"].iloc[0]) if "Daily_Month" in summary.columns and not summary.empty else "UNKNOWN"
+    global_month = str(summary["Global_Month"].iloc[0]) if "Global_Month" in summary.columns and not summary.empty else "UNKNOWN"
+    if daily_month == "UNKNOWN":
+        missing.append("Daily_Month")
+    if global_month == "UNKNOWN":
+        missing.append("Global_Month")
+
+    if missing:
+        raise RuntimeError(f"{currency} summary is missing required MDD data: {', '.join(missing)}")
+
+
+def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     if raw_df.empty:
         print(f"No raw data for {currency}")
         return
@@ -108,6 +236,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         return pd.DataFrame(columns=['Strike', settle_col, oi_col])
         
     # Determine Global DF
+    max_month = 'UNKNOWN'
     global_codes = ['EUU', 'GBU']
     global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
     if not global_df.empty:
@@ -118,31 +247,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
         global_df = calc_df
         
     # Determine Daily DF
-    def get_nearest_month(months):
-        m_map = {'JAN':1, 'FEB':2, 'MAR':3, 'APR':4, 'MAY':5, 'JUN':6, 'JUL':7, 'AUG':8, 'SEP':9, 'OCT':10, 'NOV':11, 'DEC':12}
-        return sorted(months, key=lambda x: (int(x[3:5]), m_map.get(x[:3], 99)))
-
-    daily_codes = ['SEC', 'TEC', 'WEC', 'THC', 'FRC', 'SBP', 'TGB', 'WGB', 'MGM']
-    daily_candidates = calc_df[calc_df['Option_Type'].isin(daily_codes)]
-    daily_df = pd.DataFrame(columns=calc_df.columns)
-    
-    if not daily_candidates.empty:
-        dow = datetime.datetime.today().weekday()
-        eur_daily = {0: 'SEC', 1: 'TEC', 2: 'WEC', 3: 'THC', 4: 'FRC'}
-        gbp_daily = {0: 'MGB', 1: 'TGB', 2: 'WGB', 3: 'SBP', 4: 'FGB'}
-        target_code = eur_daily.get(dow) if currency == 'EUR' else gbp_daily.get(dow)
-        
-        daily_df = daily_candidates[daily_candidates['Option_Type'] == target_code]
-        if not daily_df.empty:
-            nearest_month = get_nearest_month(daily_df['Contract_Month'].unique())[0]
-            daily_df = daily_df[daily_df['Contract_Month'] == nearest_month]
-            
-    if daily_df.empty:
-        weekly_codes = ['1EU', '2EU', '3EU', '4EU', '5EU', '1BP', '2BP', '3BP', '4BP', '5BP']
-        daily_candidates = calc_df[calc_df['Option_Type'].isin(weekly_codes)]
-        if not daily_candidates.empty:
-            nearest_month = get_nearest_month(daily_candidates['Contract_Month'].unique())[0]
-            daily_df = daily_candidates[daily_candidates['Contract_Month'] == nearest_month]
+    daily_df = select_daily_contracts(calc_df, currency, as_of_date)
     
     daily_call = get_max_oi_settle(daily_df, 'Call').rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
     daily_put = get_max_oi_settle(daily_df, 'Put').rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
@@ -176,12 +281,15 @@ def calculate_gex_pipeline(raw_df, currency, output_dir):
     summary['Global_Month'] = max_month if not global_df.empty else 'UNKNOWN'
     active_daily_month = daily_df['Contract_Month'].iloc[0] if not daily_df.empty and 'Contract_Month' in daily_df.columns else 'UNKNOWN'
     summary['Daily_Month'] = active_daily_month
+
+    validate_mdd_summary(summary, currency)
     
     # Save to CSV
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     out_file = os.path.join(output_dir, f"GEX_{currency}USD_{today_str}.csv")
     summary.to_csv(out_file, index=False)
     print(f"Saved {currency} levels to {out_file} ({len(summary)} strikes)")
+    copy_csv_to_mt5(out_file)
 
 if __name__ == "__main__":
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
