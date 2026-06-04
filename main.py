@@ -17,6 +17,25 @@ MONTH_MAP = {
 
 EUR_DAILY_BY_WEEKDAY = {0: 'SEC', 1: 'TEC', 2: 'WEC', 3: 'THC', 4: 'FRC'}
 GBP_DAILY_BY_WEEKDAY = {0: 'MGB', 1: 'TGB', 2: 'WGB', 3: 'SBP', 4: 'FGB'}
+import os
+import datetime
+import re
+import shutil
+import pandas as pd
+import pdfplumber
+from src.parser import download_cme_bulletin, extract_bulletin_date, parse_cme_pdf
+from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma
+
+DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
+
+MONTH_MAP = {
+    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+    'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+    'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+}
+
+EUR_DAILY_BY_WEEKDAY = {0: 'SEC', 1: 'TEC', 2: 'WEC', 3: 'THC', 4: 'FRC'}
+GBP_DAILY_BY_WEEKDAY = {0: 'MGB', 1: 'TGB', 2: 'WGB', 3: 'SBP', 4: 'FGB'}
 
 EUR_DAILY_CODES = ['SEC', 'TEC', 'WEC', 'THC', 'FRC']
 EUR_WEEKLY_CODES = ['1EU', '2EU', '3EU', '4EU', '5EU']
@@ -27,6 +46,37 @@ EUR_DAILY_CODE_DOW = {'SEC': 0, 'TEC': 1, 'WEC': 2, 'THC': 3, 'FRC': 4}
 EUR_WEEKLY_CODE_DOW = {'1EU': 0, '2EU': 1, '3EU': 2, '4EU': 3, '5EU': 4}
 GBP_SHORT_CODE_DOW = {'MGB': 0, 'MGM': 0, 'TGB': 1, 'WGB': 2, 'SBP': 3, 'FGB': 4}
 GBP_WEEKLY_CODE_DOW = {'1BP': 0, '2BP': 1, '3BP': 2, '4BP': 3, '5BP': 4}
+
+XAU_DAILY_BY_WEEKDAY = {0: 'GMW', 1: 'GWT', 2: 'GWW', 3: 'GWR', 4: 'OG1'}
+XAU_DAILY_CODES = ['GMW', 'GWT', 'GWW', 'GWR', 'OG1', 'OG2', 'OG3', 'OG4', 'OG5']
+XAU_WEEKLY_CODES = ['OG1', 'OG2', 'OG3', 'OG4', 'OG5']
+XAU_DAILY_CODE_DOW = {'GMW': 0, 'GWT': 1, 'GWW': 2, 'GWR': 3, 'OG1': 4}
+XAU_WEEKLY_CODE_DOW = {'OG1': 4, 'OG2': 4, 'OG3': 4, 'OG4': 4, 'OG5': 4}
+
+NAS_DAILY_BY_WEEKDAY = {0: 'Q1A', 1: 'Q1B', 2: 'Q1C', 3: 'Q1D', 4: 'QN1'}
+NAS_DAILY_CODES = [f'Q{i}{d}' for i in range(1, 6) for d in ['A', 'B', 'C', 'D']] + ['QN1', 'QN2', 'QN3', 'QN4', 'QN']
+NAS_WEEKLY_CODES = NAS_DAILY_CODES.copy()
+NAS_DAILY_CODE_DOW = {}
+for i in range(1, 6):
+    NAS_DAILY_CODE_DOW[f'Q{i}A'] = 0
+    NAS_DAILY_CODE_DOW[f'Q{i}B'] = 1
+    NAS_DAILY_CODE_DOW[f'Q{i}C'] = 2
+    NAS_DAILY_CODE_DOW[f'Q{i}D'] = 3
+for q in ['QN1', 'QN2', 'QN3', 'QN4', 'QN']:
+    NAS_DAILY_CODE_DOW[q] = 4
+NAS_WEEKLY_CODE_DOW = NAS_DAILY_CODE_DOW.copy()
+
+BTC_DAILY_BY_WEEKDAY = {0: 'BTC', 1: 'BTC', 2: 'BTC', 3: 'BTC', 4: 'BTC'}
+BTC_DAILY_CODES = ['BTC']
+BTC_WEEKLY_CODES = ['BTC']
+BTC_DAILY_CODE_DOW = {'BTC': 0}
+BTC_WEEKLY_CODE_DOW = {'BTC': 0}
+
+ETH_DAILY_BY_WEEKDAY = {0: 'ETH', 1: 'ETH', 2: 'ETH', 3: 'ETH', 4: 'ETH'}
+ETH_DAILY_CODES = ['ETH']
+ETH_WEEKLY_CODES = ['ETH']
+ETH_DAILY_CODE_DOW = {'ETH': 0}
+ETH_WEEKLY_CODE_DOW = {'ETH': 0}
 
 
 def month_sort_key(month):
@@ -73,7 +123,18 @@ def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
         print(f"MT5 GEX directory not found, skipping local copy: {target_dir}")
         return None
 
-    target_path = os.path.join(target_dir, os.path.basename(csv_path))
+    filename = os.path.basename(csv_path)
+    if "XAUUSD" in filename:
+        target_dir = os.path.join(target_dir, "XAU")
+        os.makedirs(target_dir, exist_ok=True)
+    elif "NASUSD" in filename:
+        target_dir = os.path.join(target_dir, "NAS100")
+        os.makedirs(target_dir, exist_ok=True)
+    elif "BTCUSD" in filename or "ETHUSD" in filename:
+        target_dir = os.path.join(target_dir, "Crypto")
+        os.makedirs(target_dir, exist_ok=True)
+
+    target_path = os.path.join(target_dir, filename)
     try:
         shutil.copy2(csv_path, target_path)
         print(f"Copied {os.path.basename(csv_path)} to MT5 GEX directory: {target_path}")
@@ -81,6 +142,29 @@ def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
     except OSError as exc:
         print(f"Warning: failed to copy {csv_path} to {target_path}: {exc}")
         return None
+
+
+def cleanup_old_files(target_dir=None, days_to_keep=30):
+    import time
+    base_dir = target_dir or os.environ.get("MT5_GEX_DIR") or DEFAULT_MT5_GEX_DIR
+    if not base_dir or not os.path.isdir(base_dir):
+        return
+
+    print(f"Cleaning up files older than {days_to_keep} days in: {base_dir}")
+    now = time.time()
+    cutoff = now - (days_to_keep * 86400)
+
+    for root, dirs, files in os.walk(base_dir):
+        for filename in files:
+            if filename.startswith("GEX_") and filename.endswith(".csv"):
+                filepath = os.path.join(root, filename)
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    if mtime < cutoff:
+                        os.remove(filepath)
+                        print(f"Deleted old GEX file: {filepath} (modified {time.ctime(mtime)})")
+                except OSError as e:
+                    print(f"Error deleting file {filepath}: {e}")
 
 
 def select_daily_contracts(calc_df, currency, as_of_date=None):
@@ -124,6 +208,46 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
 
         short = calc_df[calc_df['Option_Type'].isin(GBP_SHORT_CODES)]
         return filter_nearest_month(filter_nearest_code(short, GBP_SHORT_CODE_DOW, as_of_date))
+
+    if currency == 'XAU':
+        target_code = XAU_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+
+        weekly = calc_df[calc_df['Option_Type'].isin(XAU_WEEKLY_CODES)]
+        if not weekly.empty:
+            return filter_nearest_month(filter_nearest_code(weekly, XAU_WEEKLY_CODE_DOW, as_of_date))
+
+        daily = calc_df[calc_df['Option_Type'].isin(XAU_DAILY_CODES)]
+        return filter_nearest_month(filter_nearest_code(daily, XAU_DAILY_CODE_DOW, as_of_date))
+
+    if currency == 'NAS':
+        target_code = NAS_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+
+        weekly = calc_df[calc_df['Option_Type'].isin(NAS_WEEKLY_CODES)]
+        if not weekly.empty:
+            return filter_nearest_month(filter_nearest_code(weekly, NAS_WEEKLY_CODE_DOW, as_of_date))
+
+        daily = calc_df[calc_df['Option_Type'].isin(NAS_DAILY_CODES)]
+        return filter_nearest_month(filter_nearest_code(daily, NAS_DAILY_CODE_DOW, as_of_date))
+
+    if currency == 'BTC':
+        target_code = BTC_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+        return filter_nearest_month(calc_df)
+
+    if currency == 'ETH':
+        target_code = ETH_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+        return filter_nearest_month(calc_df)
 
     return pd.DataFrame(columns=calc_df.columns)
 
@@ -187,9 +311,13 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     # Auto-detect Spot price from ATM options (delta close to 0.5)
     atm_rows = raw_df[(raw_df['Delta'] >= 0.45) & (raw_df['Delta'] <= 0.55)]
     if not atm_rows.empty:
-        spot = atm_rows['Strike'].mean()
+        nearest_m = nearest_month(atm_rows['Contract_Month'].dropna().unique())
+        if nearest_m:
+            spot = atm_rows[atm_rows['Contract_Month'] == nearest_m]['Strike'].mean()
+        else:
+            spot = atm_rows['Strike'].mean()
     else:
-        spot = 1.1500 if currency == 'EUR' else 1.3400 # Fallbacks
+        spot = 4600.0 if currency == 'XAU' else (30000.0 if currency == 'NAS' else (66000.0 if currency == 'BTC' else (3400.0 if currency == 'ETH' else (1.1500 if currency == 'EUR' else 1.3400)))) # Fallbacks
         
     print(f"[{currency}] Detected Spot price: {spot:.4f}")
     
@@ -208,14 +336,14 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             strike_atm = strike_atm.iloc[0]
         iv_atm = implied_volatility(price_atm, spot, strike_atm, 0.08, 0.0, 'C' if is_call_val else 'P')
         if iv_atm <= 0.001:
-            iv_atm = 0.07 if currency == 'EUR' else 0.08
+            iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else 0.08))))
     else:
-        iv_atm = 0.07 if currency == 'EUR' else 0.08
+        iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else 0.08))))
         
     sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
     print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
     
-    contract_size = 125000 if currency == 'EUR' else 62500
+    contract_size = 5 if currency == 'BTC' else (50 if currency == 'ETH' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else 62500))))
     T = 0.08
     r = 0.0
     
@@ -281,7 +409,14 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
 
     # Determine Global DF
     max_month = 'UNKNOWN'
-    global_codes = ['EUU', 'GBU']
+    global_codes = {
+        'EUR': ['EUU'],
+        'GBP': ['GBU'],
+        'XAU': ['OG'],
+        'NAS': ['EMINI'],
+        'BTC': ['BTC'],
+        'ETH': ['ETH']
+    }.get(currency, ['OG'])
     global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
     if not global_df.empty:
         month_oi = global_df.groupby('Contract_Month')['Call_OI'].sum() + global_df.groupby('Contract_Month')['Put_OI'].sum()
@@ -373,3 +508,58 @@ if __name__ == "__main__":
         gbp_puts = parse_cme_pdf(gbp_put_dest, "GBP", is_call_only=False)
         gbp_raw = pd.concat([gbp_calls, gbp_puts])
         calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR, session_date)
+
+    # Step 4: Parse and process XAU data
+    xau_section = "Section64_Metals_Option_Products.pdf"
+    xau_dest = os.path.join(DATA_DIR, xau_section)
+    xau_ok = download_cme_bulletin(xau_section, xau_dest)
+    if xau_ok:
+        xau_bulletin_date = extract_bulletin_date(xau_dest) or datetime.date.today()
+        session_date = datetime.date.today()
+        print(f"[XAU] CME bulletin trade date: {xau_bulletin_date}; session date: {session_date}")
+        xau_raw = parse_cme_pdf(xau_dest, "XAU", is_call_only=None)
+        if not xau_raw.empty:
+            gold_option_types = ['OG', 'GMW', 'GWT', 'GWW', 'GWR', 'OG1', 'OG2', 'OG3', 'OG4', 'OG5', 'MMG', 'FMG']
+            xau_raw = xau_raw[xau_raw['Option_Type'].isin(gold_option_types)]
+        calculate_gex_pipeline(xau_raw, "XAU", DATA_DIR, session_date)
+
+    # Step 5: Parse and process NAS data
+    nas_section = "Section40_Nasdaq_100_And_E_Mini_Nasdaq_100_Options.pdf"
+    nas_dest = os.path.join(DATA_DIR, nas_section)
+    nas_ok = download_cme_bulletin(nas_section, nas_dest)
+    if nas_ok:
+        nas_bulletin_date = extract_bulletin_date(nas_dest) or datetime.date.today()
+        session_date = datetime.date.today()
+        print(f"[NAS] CME bulletin trade date: {nas_bulletin_date}; session date: {session_date}")
+        nas_raw = parse_cme_pdf(nas_dest, "NAS", is_call_only=None)
+        if not nas_raw.empty:
+            nas_raw = nas_raw[nas_raw['Strike'] >= 10000.0]
+        calculate_gex_pipeline(nas_raw, "NAS", DATA_DIR, session_date)
+
+    # Step 6: Parse and process Crypto data
+    crypto_section = "Section74_Cryptocurrency.pdf"
+    crypto_dest = os.path.join(DATA_DIR, crypto_section)
+    crypto_ok = download_cme_bulletin(crypto_section, crypto_dest)
+    if crypto_ok:
+        crypto_bulletin_date = extract_bulletin_date(crypto_dest) or datetime.date.today()
+        session_date = datetime.date.today()
+        print(f"[Crypto] CME bulletin trade date: {crypto_bulletin_date}; session date: {session_date}")
+        crypto_raw = parse_cme_pdf(crypto_dest, "BTC", is_call_only=None)
+        
+        # Process BTC
+        btc_raw = crypto_raw[crypto_raw['Option_Type'] == 'BTC']
+        if not btc_raw.empty:
+            calculate_gex_pipeline(btc_raw, "BTC", DATA_DIR, session_date)
+        else:
+            print("[Crypto] Warning: No BTC option rows found.")
+            
+        # Process ETH
+        eth_raw = crypto_raw[crypto_raw['Option_Type'] == 'ETH']
+        if not eth_raw.empty:
+            calculate_gex_pipeline(eth_raw, "ETH", DATA_DIR, session_date)
+        else:
+            print("[Crypto] Warning: No ETH option rows found.")
+
+    # Step 7: Clean up old GEX files in MT5 directory (keep 30 days)
+    cleanup_old_files()
+

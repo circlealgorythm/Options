@@ -80,6 +80,10 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
     Parses a CME Daily Bulletin PDF for a specific currency option data.
     is_call_only: True if processing Call options only, False for Put only, None for mixed (EUR).
     """
+    """
+    Parses a CME Daily Bulletin PDF for a specific currency option data.
+    is_call_only: True if processing Call options only, False for Put only, None for mixed (EUR).
+    """
     data = []
     
     if not os.path.exists(pdf_path):
@@ -88,6 +92,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
         
     current_contract_month = "UNKNOWN"
     current_option_type = "UNKNOWN"
+    is_call_state = is_call_only
     
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -103,11 +108,33 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     
                 # Look for section headers indicating option type and contract month
                 if not parts[0].isdigit():
-                    if "OPT" in parts:
-                        opt_idx = parts.index("OPT")
-                        if opt_idx >= 1:
-                            current_option_type = parts[opt_idx - 1]
+                    line_upper = line.upper()
+                    is_header = False
+                    if any(kw in line_upper for kw in ["CALL", "PUT", "OPTIONS", "OPTION", "OOF", "OPT"]):
+                        is_header = True
                     
+                    if is_header:
+                        first_token = parts[0]
+                        # If first token is a contract month (e.g. JUN26), check the next token
+                        first_cleaned = re.sub(r'[^A-Z0-9]', '', first_token.upper())
+                        if re.match(r'^[A-Z]{3}\d{2}$', first_cleaned) and len(parts) > 1:
+                            token_to_check = parts[1]
+                        else:
+                            token_to_check = first_token
+                            
+                        option_code = re.sub(r'[^A-Z0-9]', '', token_to_check.upper())
+                        # Length 2-5, ignore PGxx, FOR, TOTAL, RTO, and contract months
+                        if (2 <= len(option_code) <= 5) and not option_code.startswith("PG") and option_code not in ["FOR", "TOTAL", "RTO"] and not re.match(r'^[A-Z]{3}\d{2}$', option_code):
+                            current_option_type = option_code
+                            
+                    if currency in ['XAU', 'BTC', 'ETH'] and is_header:
+                        if "CALL" in line_upper:
+                            is_call_state = True
+                        elif "PUT" in line_upper:
+                            is_call_state = False
+                        else:
+                            is_call_state = None
+                            
                     for p in parts:
                         if re.match(r'^[A-Z]{3}\d{2}$', p):
                             current_contract_month = p
@@ -121,6 +148,8 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 strike = float(strike_raw)
                 if currency == 'EUR':
                     strike /= 10000.0
+                elif currency in ['XAU', 'NAS', 'NQ', 'BTC', 'ETH']:
+                    pass
                 else:
                     strike /= 1000.0
                     
@@ -131,7 +160,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     part = parts[idx]
                     # Delta is usually a clean decimal like .146 or 0.146.
                     # Avoid Bid/Ask quotes containing letters A/B
-                    if (re.match(r'^\.\d{3}$', part) or re.match(r'^0\.\d{3}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
+                    if (re.match(r'^\.\d{3,4}$', part) or re.match(r'^0\.\d{3,4}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
                         delta_idx = idx
                         break
                 if delta_idx < 5:
@@ -179,6 +208,8 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                                 is_decimal_quoted = True
 
                         settle = raw_settle if is_decimal_quoted else raw_settle / 100.0
+                    elif currency == 'XAU':
+                        settle = raw_settle
                     else:
                         settle = raw_settle
                         
@@ -195,7 +226,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     "Settle": settle,
                     "Delta": delta,
                     "OI": oi,
-                    "Is_Call": is_call_only,
+                    "Is_Call": is_call_state,
                     "Contract_Month": current_contract_month,
                     "Option_Type": current_option_type
                 })

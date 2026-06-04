@@ -15,7 +15,7 @@ input string   InpGithubRepo  = "Options";         // GitHub Repository Name
 input string   InpGithubToken = "";                // GitHub PAT (leave empty if repo is public)
 
 input group "--- Display Settings ---"
-input int      InpHistoryDays = 30;                // Days of history to load
+input int      InpHistoryDays = 14;                // Days of history to load
 input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
 input int      InpBaseLineWidth = 1;               // Base Line Width (for all lines)
 input bool     InpUseDynamicWidth = true;          // Scale GEX line widths dynamically based on volume
@@ -534,22 +534,41 @@ double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_
          }
       }
       
-      // Request daily history loading
+      // Request daily history loading for this specific date, to pull the bar into terminal cache
       datetime temp[];
-      CopyTime(symbol, PERIOD_D1, 0, 1, temp);
+      CopyTime(symbol, PERIOD_D1, time_val, 1, temp);
       
       Sleep(20);
    }
    
-   // Last resort for today only. Normal path uses the fixed D1 open, so levels stay static intraday.
-   if(is_today && (out_shift < 0 || spot_reference <= 0.0))
+   // Fallback using chart timeframe (_Period) if D1 history is not synchronized.
+   // This is robust for both historical days and today.
+   if(spot_reference <= 0.0)
    {
       int fallback_shift = iBarShift(symbol, _Period, time_val);
       if(fallback_shift >= 0)
+      {
          spot_reference = iOpen(symbol, _Period, fallback_shift);
-      if(spot_reference <= 0.0)
+         if(spot_reference > 0.0)
+         {
+            out_shift = fallback_shift;
+         }
+      }
+      
+      // Ultimate fallback to Bid for today
+      if(spot_reference <= 0.0 && is_today)
+      {
          spot_reference = SymbolInfoDouble(symbol, SYMBOL_BID);
-      PrintFormat("Warning: D1 history for today (%s) not synchronized after retries. Using fallback spot reference %.5f.", TimeToString(time_val, TIME_DATE), spot_reference);
+      }
+      
+      if(spot_reference > 0.0)
+      {
+         PrintFormat("Warning: D1 history for %s (%s) not synchronized after retries. Using fallback spot reference %.5f.", symbol, TimeToString(time_val, TIME_DATE), spot_reference);
+      }
+      else
+      {
+         PrintFormat("Error: Failed to find any spot reference for %s on %s.", symbol, TimeToString(time_val, TIME_DATE));
+      }
    }
    
    return spot_reference;
@@ -970,8 +989,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, label_time, chart_price))
       {
          string sign = (gex >= 0) ? "+" : "";
-         string text_val = StringFormat("%sGEX %s%s (%d%%) | AG %s (%d%%)", 
-                                        type_prefix, sign, FormatVolume(gex), gex_pct, FormatVolume(ag), ag_pct);
+         string text_val = StringFormat("%sGEX %s%s (%d%%) | AG (%d%%)", 
+                                        type_prefix, sign, FormatVolume(gex), gex_pct, ag_pct);
          ObjectSetString(0, text_obj_name, OBJPROP_TEXT, text_val);
          ObjectSetInteger(0, text_obj_name, OBJPROP_COLOR, line_color);
          ObjectSetInteger(0, text_obj_name, OBJPROP_FONTSIZE, 8);
