@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CME GEX</title>
+    
+    <!-- Premium Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <!-- Background glowing gradient blobs -->
+    <div class="glow-bg">
+        <div class="blob blob-purple"></div>
+        <div class="blob blob-cyan"></div>
+        <div class="blob blob-gold"></div>
+    </div>
+
+    <!-- App Container -->
+    <div class="app-container">
+        
+        <!-- Sidebar Controls -->
+        <aside class="sidebar glass">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fa-solid fa-chart-line-up logo-icon"></i>
+                    <h2>CME<span>GEX</span></h2>
+                </div>
+            </div>
+            
+            <div class="sidebar-section">
+                <h3><i class="fa-solid fa-compass"></i> Навигация</h3>
+                <div class="nav-menu">
+                    <button class="nav-btn active" data-view="dashboard">
+                        <i class="fa-solid fa-chart-area"></i> Графики и уровни
+                    </button>
+                    <button class="nav-btn" data-view="analysis">
+                        <i class="fa-solid fa-book-open-reader"></i> Аналитика GEX
+                    </button>
+                </div>
+            </div>
+            
+            <div class="sidebar-section">
+                <h3><i class="fa-solid fa-money-bill-transfer"></i> Валютная пара</h3>
+                <div class="currency-tabs">
+                    <button class="currency-tab active" data-currency="GBP">
+                        GBPUSD
+                    </button>
+                    <button class="currency-tab" data-currency="EUR">
+                        EURUSD
+                    </button>
+                    <button class="currency-tab" data-currency="XAU">
+                        XAUUSD
+                    </button>
+                    <button class="currency-tab" data-currency="NAS">
+                        NAS100
+                    </button>
+                    <button class="currency-tab" data-currency="BTC">
+                        BTCUSD
+                    </button>
+                    <button class="currency-tab" data-currency="ETH">
+                        ETHUSD
+                    </button>
+                </div>
+            </div>
+            
+            <div class="sidebar-section">
+                <h3><i class="fa-solid fa-calendar-days"></i> Дата торгов CME</h3>
+                <div class="custom-select-wrapper">
+                    <select id="date-select" class="glass-select">
+                        <option value="">Загрузка дат...</option>
+                    </select>
+                    <i class="fa-solid fa-chevron-down select-chevron"></i>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3><i class="fa-solid fa-sliders"></i> Настройки отображения</h3>
+                <div class="toggle-list">
+                    <label class="toggle-control">
+                        <input type="checkbox" id="toggle-gex" checked>
+                        <span class="control-indicator"></span>
+                        <span class="control-label">Показывать Net GEX (Столбцы)</span>
+                    </label>
+                    <label class="toggle-control">
+                        <input type="checkbox" id="toggle-gamma" checked>
+                        <span class="control-indicator"></span>
+                        <span class="control-label">Показывать Abs Gamma (Линия)</span>
+                    </label>
+                    <label class="toggle-control">
+                        <input type="checkbox" id="toggle-spot" checked>
+                        <span class="control-indicator"></span>
+                        <span class="control-label">Показывать спот-цену</span>
+                    </label>
+                    <label class="toggle-control">
+                        <input type="checkbox" id="toggle-bands" checked>
+                        <span class="control-indicator"></span>
+                        <span class="control-label">Показывать зоны R68/R95</span>
+                    </label>
+                    <label class="toggle-control">
+                        <input type="checkbox" id="toggle-zerogamma" checked>
+                        <span class="control-indicator"></span>
+                        <span class="control-label">Показывать Zero Gamma</span>
+                    </label>
+                    <div class="slider-control" style="margin-top: 10px; border-top: 1px solid var(--border-glass); padding-top: 15px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
+                            <span>Фильтр шума GEX:</span>
+                            <span id="noise-filter-val" style="font-weight: 700; color: var(--accent-cyan);">2.0%</span>
+                        </div>
+                        <input type="range" id="noise-filter-slider" min="0.5" max="25.0" step="0.5" value="2.0" class="glass-slider">
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-section action-buttons">
+                <button id="btn-update" class="glass-btn btn-green">
+                    <i class="fa-solid fa-arrows-rotate"></i> Обновить данные CME
+                </button>
+                <button id="btn-export" class="glass-btn btn-purple">
+                    <i class="fa-solid fa-file-csv"></i> Экспорт в CSV
+                </button>
+                <button id="btn-refresh" class="glass-btn btn-blue">
+                    <i class="fa-solid fa-arrows-spin"></i> Обновить дашборд
+                </button>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="sync-status">
+                    <div class="status-indicator online"></div>
+                    <span id="sync-text">Синхронизация MT5: Проверка</span>
+                </div>
+                <p class="mt5-dir-label" id="mt5-dir-text">Загрузка пути терминала...</p>
+            </div>
+        </aside>
+
+        <!-- Main Dashboard Area -->
+        <main class="main-content">
+            
+            <!-- Top Navigation / Header -->
+            <header class="glass-header glass">
+                <div class="header-title-block">
+                    <h1>Дашборд опционных уровней</h1>
+                    <p>Анализ волатильности и гамма-профиля CME в реальном времени</p>
+                </div>
+                <div class="header-status-block">
+                    <div class="glass-badge badge-cyan">
+                        <i class="fa-solid fa-clock"></i> <span id="session-time">00:00:00</span>
+                    </div>
+                    <div class="glass-badge badge-gold">
+                        <i class="fa-solid fa-database"></i> <span id="status-db-date">Загрузка</span>
+                    </div>
+                    <div class="glass-badge badge-green">
+                        <i class="fa-solid fa-server"></i> Сервер онлайн
+                    </div>
+                </div>
+            </header>
+
+            <!-- Metrics Grid -->
+            <section class="metrics-grid">
+                
+                <!-- Spot Price Card -->
+                <div class="metric-card glass glow-card">
+                    <div class="card-inner">
+                        <div class="card-icon icon-cyan">
+                            <i class="fa-solid fa-bullseye-arrow"></i>
+                        </div>
+                        <div class="card-data">
+                            <h3>Спот-цена фьючерса</h3>
+                            <div class="value value-cyan" id="metric-spot">0.0000</div>
+                            <span class="subtitle" id="metric-spot-currency">Опорный спот GBPUSD</span>
+                        </div>
+                    </div>
+                    <div class="card-progress bg-cyan"></div>
+                </div>
+
+                <!-- Net GEX Card -->
+                <div class="metric-card glass glow-card">
+                    <div class="card-inner">
+                        <div class="card-icon icon-green" id="metric-gex-icon">
+                            <i class="fa-solid fa-scale-balanced"></i>
+                        </div>
+                        <div class="card-data">
+                            <h3>Общий чистый GEX</h3>
+                            <div class="value" id="metric-net-gex">0.00M</div>
+                            <span class="subtitle">Суммарный объем GEX</span>
+                        </div>
+                    </div>
+                    <div class="card-progress" id="metric-gex-progress"></div>
+                </div>
+
+                <!-- Zero Gamma Card -->
+                <div class="metric-card glass glow-card">
+                    <div class="card-inner">
+                        <div class="card-icon icon-gold">
+                            <i class="fa-solid fa-circle-nodes"></i>
+                        </div>
+                        <div class="card-data">
+                            <h3>Уровень Zero Gamma</h3>
+                            <div class="value value-gold" id="metric-zero-gamma">0.0000</div>
+                            <span class="subtitle">Точка переворота GEX</span>
+                        </div>
+                    </div>
+                    <div class="card-progress bg-gold"></div>
+                </div>
+
+                <!-- Max Abs Gamma Card -->
+                <div class="metric-card glass glow-card">
+                    <div class="card-inner">
+                        <div class="card-icon icon-purple">
+                            <i class="fa-solid fa-magnet"></i>
+                        </div>
+                        <div class="card-data">
+                            <h3>Макс. Абс. Гамма</h3>
+                            <div class="value value-purple" id="metric-max-gamma">0.0000</div>
+                            <span class="subtitle" id="metric-max-gamma-val">Страйк-магнит</span>
+                        </div>
+                    </div>
+                    <div class="card-progress bg-purple"></div>
+                </div>
+
+                <!-- Option Months Card -->
+                <div class="metric-card glass glow-card">
+                    <div class="card-inner">
+                        <div class="card-icon icon-red">
+                            <i class="fa-solid fa-calendar-check"></i>
+                        </div>
+                        <div class="card-data">
+                            <h3>Активные опционные месяцы</h3>
+                            <div class="value-text" id="metric-months">DLY: -- | GLB: --</div>
+                            <span class="subtitle">Текущие серии CME</span>
+                        </div>
+                    </div>
+                    <div class="card-progress bg-red"></div>
+                </div>
+            </section>
+
+            <!-- Chart Container -->
+            <section class="chart-section glass">
+                <div class="chart-header">
+                    <h2><i class="fa-solid fa-chart-line"></i> Распределение Net GEX и абсолютной гаммы</h2>
+                    <div class="chart-legend">
+                        <span class="legend-item"><span class="legend-color bg-green"></span> Net GEX Call (+)</span>
+                        <span class="legend-item"><span class="legend-color bg-red"></span> Net GEX Put (-)</span>
+                        <span class="legend-item"><span class="legend-color border-gold bg-trans-gold"></span> Абсолютная гамма</span>
+                    </div>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="gexChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Data Table Container -->
+            <section class="table-section glass">
+                <div class="table-header">
+                    <h2><i class="fa-solid fa-list-check"></i> Опционная сетка CME</h2>
+                    <div class="table-controls">
+                        <div class="search-box glass" id="search-box-wrapper" style="display: none;">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="table-search" placeholder="Поиск страйка...">
+                        </div>
+                        <div class="table-filter">
+                            <button class="filter-btn active" data-tab="calculated">Расчетные уровни</button>
+                            <button class="filter-btn" data-tab="key-strikes">Ключевые страйки</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="levels-table">
+                        <thead id="levels-table-head">
+                            <!-- Заголовки таблицы рендерятся динамически в app.js -->
+                        </thead>
+                        <tbody id="levels-table-body">
+                            <tr>
+                                <td colspan="10" class="text-center">Загрузка данных...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Analysis Container -->
+            <section class="analysis-section glass" id="analysis-view-container" style="display: none;">
+                <div class="analysis-header">
+                    <h2><i class="fa-solid fa-book-open-reader"></i> Аналитический отчет GEX</h2>
+                    <div class="analysis-tabs">
+                        <button class="analysis-tab-btn active" data-day="weekly">Недельный обзор</button>
+                        <button class="analysis-tab-btn" data-day="monday">Понедельник</button>
+                        <button class="analysis-tab-btn" data-day="tuesday">Вторник</button>
+                        <button class="analysis-tab-btn" data-day="wednesday">Среда</button>
+                        <button class="analysis-tab-btn" data-day="thursday">Четверг</button>
+                        <button class="analysis-tab-btn" data-day="friday">Пятница</button>
+                    </div>
+                </div>
+                <div class="analysis-content-wrapper">
+                    <div class="analysis-meta">
+                        <span id="analysis-updated-label"><i class="fa-solid fa-clock"></i> Последнее обновление: --</span>
+                    </div>
+                    <div class="analysis-markdown-body" id="analysis-content">
+                        <div class="text-center text-muted" style="padding: 40px 0;">
+                            <i class="fa-solid fa-robot" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-cyan);"></i>
+                            <p>Анализ для выбранного периода еще не составлен.</p>
+                            <p style="font-size: 13px; margin-top: 8px;">Запросите проведение анализа в чате с ИИ-помощником.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Pipeline Notification Modal -->
+    <div id="pipeline-modal" class="modal-overlay">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-arrows-spin icon-spin-slow"></i> Запуск загрузки данных CME...</h3>
+            </div>
+            <div class="modal-body">
+                <p>Скачивание актуальных PDF-бюллетеней CME Group и расчет подразумеваемой волатильности Блэка-Шоулза, объемов Net GEX, абсолютной гаммы и уровней MDD.</p>
+                <div class="loader-bar">
+                    <div class="loader-progress"></div>
+                </div>
+                <div class="terminal-log" id="modal-terminal-log">
+                    Инициализация скрипта main.py...
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-close-modal" class="glass-btn btn-gray" disabled>Пожалуйста, подождите...</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
