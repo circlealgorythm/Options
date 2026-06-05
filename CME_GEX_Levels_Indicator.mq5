@@ -80,9 +80,11 @@ int OnInit()
       g_base_currency = "BTC";
    else if(StringFind(symbol, "ETH") >= 0)
       g_base_currency = "ETH";
+   else if(StringFind(symbol, "CAD") >= 0)
+      g_base_currency = "CAD";
    else
    {
-      Alert("Symbol ", symbol, " is not supported. Supported: EUR, GBP, XAU/GOLD, NAS100, BTCUSD, ETHUSD.");
+      Alert("Symbol ", symbol, " is not supported. Supported: EUR, GBP, XAU/GOLD, NAS100, BTCUSD, ETHUSD, USDCAD.");
       return(INIT_FAILED);
    }
 
@@ -390,6 +392,8 @@ bool FetchAndParseDate(string date_str, string &out_month)
       local_file_path += "NAS100\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
    else if(g_base_currency == "BTC" || g_base_currency == "ETH")
       local_file_path += "Crypto\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
+   else if(g_base_currency == "CAD")
+      local_file_path += "USDCAD\\GEX_USDCAD_" + date_str + ".csv";
    else
       local_file_path += "GEX_" + g_base_currency + "USD_" + date_str + ".csv";
    if(!prefer_remote && FileIsExist(local_file_path))
@@ -415,10 +419,14 @@ bool FetchAndParseDate(string date_str, string &out_month)
    string url;
    string headers = "User-Agent: MetaTrader5\r\n";
    
+   string filename = "GEX_" + g_base_currency + "USD_" + date_str + ".csv";
+   if(g_base_currency == "CAD")
+      filename = "GEX_USDCAD_" + date_str + ".csv";
+      
    if(StringLen(InpGithubToken) > 0)
    {
       url = "https://api.github.com/repos/" + InpGithubUser + "/" + InpGithubRepo + 
-            "/contents/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
+            "/contents/data/" + filename;
             
       headers += "Authorization: Bearer " + InpGithubToken + "\r\n";
       headers += "Accept: application/vnd.github.v3.raw\r\n";
@@ -427,7 +435,7 @@ bool FetchAndParseDate(string date_str, string &out_month)
    else
    {
       url = "https://raw.githubusercontent.com/" + InpGithubUser + "/" + InpGithubRepo + 
-            "/main/data/GEX_" + g_base_currency + "USD_" + date_str + ".csv";
+            "/main/data/" + filename;
    }
                  
    char post[], result_data[];

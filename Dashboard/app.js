@@ -93,7 +93,7 @@ function formatGEX(value) {
 function loadSavedState() {
     // 1. Currency Pair
     const savedCurrency = localStorage.getItem('gex_dashboard_currency');
-    if (savedCurrency === 'GBP' || savedCurrency === 'EUR' || savedCurrency === 'XAU' || savedCurrency === 'NAS' || savedCurrency === 'BTC' || savedCurrency === 'ETH') {
+    if (savedCurrency === 'GBP' || savedCurrency === 'EUR' || savedCurrency === 'XAU' || savedCurrency === 'NAS' || savedCurrency === 'BTC' || savedCurrency === 'ETH' || savedCurrency === 'USDCAD') {
         state.currency = savedCurrency;
         elements.currencyTabs.forEach(t => {
             if (t.dataset.currency === savedCurrency) {
@@ -339,7 +339,10 @@ async function fetchLevelData() {
 // Clear dashboard chart and reset metric cards to default states on error
 function clearDashboardData() {
     if (elements.metricSpot) elements.metricSpot.textContent = '0.00';
-    if (elements.metricSpotCurrency) elements.metricSpotCurrency.textContent = `Опорный спот ${state.currency}USD`;
+    if (elements.metricSpotCurrency) {
+        const currencyLabel = state.currency.includes('USD') ? state.currency : `${state.currency}USD`;
+        elements.metricSpotCurrency.textContent = `Опорный спот ${currencyLabel}`;
+    }
     if (elements.metricNetGex) {
         elements.metricNetGex.textContent = '0.00';
         elements.metricNetGex.className = 'value';
@@ -364,7 +367,8 @@ function updateMetrics(payload) {
     
     // Spot Price
     elements.metricSpot.textContent = formatPrice(meta.spot);
-    elements.metricSpotCurrency.textContent = `Опорный спот ${meta.currency}USD`;
+    const currencyLabel = meta.currency.includes('USD') ? meta.currency : `${meta.currency}USD`;
+    elements.metricSpotCurrency.textContent = `Опорный спот ${currencyLabel}`;
     
     // Net GEX
     const totalGex = levels.reduce((acc, curr) => acc + curr.gex, 0);
@@ -1065,7 +1069,8 @@ function exportCSV() {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `GEX_${state.currency}USD_${state.date}_Export.csv`);
+    const fileCurrency = state.currency.includes('USD') ? state.currency : `${state.currency}USD`;
+    link.setAttribute("download", `GEX_${fileCurrency}_${state.date}_Export.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1116,10 +1121,11 @@ function renderAnalysis() {
     // Check if the currency key exists
     const currencyData = state.analysisData[state.currency];
     if (!currencyData) {
+        const currencyLabel = state.currency.includes('USD') ? state.currency : `${state.currency}USD`;
         elements.analysisContent.innerHTML = `
             <div class="text-center text-muted" style="padding: 40px 0;">
                 <i class="fa-solid fa-circle-info" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-cyan);"></i>
-                <p>Нет аналитических данных для валютной пары ${state.currency}USD.</p>
+                <p>Нет аналитических данных для валютной пары ${currencyLabel}.</p>
             </div>
         `;
         elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Обновление: Нет данных`;

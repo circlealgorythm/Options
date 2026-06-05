@@ -78,6 +78,15 @@ ETH_WEEKLY_CODES = ['ETH']
 ETH_DAILY_CODE_DOW = {'ETH': 0}
 ETH_WEEKLY_CODE_DOW = {'ETH': 0}
 
+CAD_DAILY_BY_WEEKDAY = {0: 'MCM', 1: 'TCD', 2: 'WCD', 3: 'SCD', 4: '1CD'}
+CAD_DAILY_CODES = ['MCM', 'TCD', 'WCD', 'SCD', '1CD', '2CD', '3CD', '4CD', '5CD']
+CAD_WEEKLY_CODES = CAD_DAILY_CODES.copy()
+CAD_DAILY_CODE_DOW = {
+    'MCM': 0, 'TCD': 1, 'WCD': 2, 'SCD': 3,
+    '1CD': 4, '2CD': 4, '3CD': 4, '4CD': 4, '5CD': 4
+}
+CAD_WEEKLY_CODE_DOW = CAD_DAILY_CODE_DOW.copy()
+
 
 def month_sort_key(month):
     if not isinstance(month, str) or len(month) < 5:
@@ -132,6 +141,9 @@ def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
         os.makedirs(target_dir, exist_ok=True)
     elif "BTCUSD" in filename or "ETHUSD" in filename:
         target_dir = os.path.join(target_dir, "Crypto")
+        os.makedirs(target_dir, exist_ok=True)
+    elif "USDCAD" in filename:
+        target_dir = os.path.join(target_dir, "USDCAD")
         os.makedirs(target_dir, exist_ok=True)
 
     target_path = os.path.join(target_dir, filename)
@@ -249,6 +261,19 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
             return filter_nearest_month(exact)
         return filter_nearest_month(calc_df)
 
+    if currency in ['CAD', 'USDCAD']:
+        target_code = CAD_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+
+        weekly = calc_df[calc_df['Option_Type'].isin(CAD_WEEKLY_CODES)]
+        if not weekly.empty:
+            return filter_nearest_month(filter_nearest_code(weekly, CAD_WEEKLY_CODE_DOW, as_of_date))
+
+        daily = calc_df[calc_df['Option_Type'].isin(CAD_DAILY_CODES)]
+        return filter_nearest_month(filter_nearest_code(daily, CAD_DAILY_CODE_DOW, as_of_date))
+
     return pd.DataFrame(columns=calc_df.columns)
 
 
@@ -317,7 +342,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         else:
             spot = atm_rows['Strike'].mean()
     else:
-        spot = 4600.0 if currency == 'XAU' else (30000.0 if currency == 'NAS' else (66000.0 if currency == 'BTC' else (3400.0 if currency == 'ETH' else (1.1500 if currency == 'EUR' else 1.3400)))) # Fallbacks
+        spot = 4600.0 if currency == 'XAU' else (30000.0 if currency == 'NAS' else (66000.0 if currency == 'BTC' else (3400.0 if currency == 'ETH' else (1.1500 if currency == 'EUR' else (1.3700 if currency == 'USDCAD' else 1.3400))))) # Fallbacks
         
     print(f"[{currency}] Detected Spot price: {spot:.4f}")
     
@@ -336,14 +361,14 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             strike_atm = strike_atm.iloc[0]
         iv_atm = implied_volatility(price_atm, spot, strike_atm, 0.08, 0.0, 'C' if is_call_val else 'P')
         if iv_atm <= 0.001:
-            iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else 0.08))))
+            iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else (0.06 if currency == 'USDCAD' else 0.08)))))
     else:
-        iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else 0.08))))
+        iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else (0.06 if currency == 'USDCAD' else 0.08)))))
         
     sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
     print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
     
-    contract_size = 5 if currency == 'BTC' else (50 if currency == 'ETH' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else 62500))))
+    contract_size = 100000 if currency == 'USDCAD' else (5 if currency == 'BTC' else (50 if currency == 'ETH' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else 62500)))))
     T = 0.08
     r = 0.0
     
@@ -415,7 +440,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         'XAU': ['OG'],
         'NAS': ['EMINI'],
         'BTC': ['BTC'],
-        'ETH': ['ETH']
+        'ETH': ['ETH'],
+        'USDCAD': ['CAU']
     }.get(currency, ['OG'])
     global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
     if not global_df.empty:
@@ -468,7 +494,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     
     # Save to CSV
     today_str = datetime.date.today().strftime("%Y-%m-%d")
-    out_file = os.path.join(output_dir, f"GEX_{currency}USD_{today_str}.csv")
+    filename = f"GEX_USDCAD_{today_str}.csv" if currency == "USDCAD" else f"GEX_{currency}USD_{today_str}.csv"
+    out_file = os.path.join(output_dir, filename)
     summary.to_csv(out_file, index=False)
     print(f"Saved {currency} levels to {out_file} ({len(summary)} strikes)")
     copy_csv_to_mt5(out_file)
@@ -560,6 +587,43 @@ if __name__ == "__main__":
         else:
             print("[Crypto] Warning: No ETH option rows found.")
 
-    # Step 7: Clean up old GEX files in MT5 directory (keep 30 days)
+    # Step 7: Parse and process USDCAD data
+    cad_call_section = "Section29_Canadian_Dollar_Call_Options.pdf"
+    cad_put_section = "Section30_Canadian_Dollar_Put_Options.pdf"
+    cad_call_dest = os.path.join(DATA_DIR, cad_call_section)
+    cad_put_dest = os.path.join(DATA_DIR, cad_put_section)
+    
+    cad_call_ok = download_cme_bulletin(cad_call_section, cad_call_dest)
+    cad_put_ok = download_cme_bulletin(cad_put_section, cad_put_dest)
+    
+    if cad_call_ok and cad_put_ok:
+        cad_bulletin_date = extract_bulletin_date(cad_call_dest) or extract_bulletin_date(cad_put_dest) or datetime.date.today()
+        session_date = datetime.date.today()
+        print(f"[USDCAD] CME bulletin trade date: {cad_bulletin_date}; session date: {session_date}")
+        cad_calls = parse_cme_pdf(cad_call_dest, "CAD", is_call_only=True)
+        cad_puts = parse_cme_pdf(cad_put_dest, "CAD", is_call_only=False)
+        cad_raw = pd.concat([cad_calls, cad_puts]).reset_index(drop=True)
+        
+        if not cad_raw.empty:
+            atm_rows = cad_raw[(cad_raw['Delta'] >= 0.45) & (cad_raw['Delta'] <= 0.55)]
+            if not atm_rows.empty:
+                nearest_m = nearest_month(atm_rows['Contract_Month'].dropna().unique())
+                if nearest_m:
+                    cad_spot = atm_rows[atm_rows['Contract_Month'] == nearest_m]['Strike'].mean()
+                else:
+                    cad_spot = atm_rows['Strike'].mean()
+            else:
+                cad_spot = 0.7200
+                
+            print(f"[CAD] Detected raw CADUSD spot price for conversion: {cad_spot:.5f}")
+            
+            usdcad_raw = cad_raw.copy()
+            usdcad_raw['Strike'] = 1.0 / cad_raw['Strike']
+            usdcad_raw['Is_Call'] = ~cad_raw['Is_Call']
+            usdcad_raw['Settle'] = cad_raw['Settle'] / (cad_raw['Strike'] * cad_spot)
+            
+            calculate_gex_pipeline(usdcad_raw, "USDCAD", DATA_DIR, session_date)
+
+    # Step 8: Clean up old GEX files in MT5 directory (keep 30 days)
     cleanup_old_files()
 

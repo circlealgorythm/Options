@@ -146,7 +146,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     
                 strike_raw = parts[0]
                 strike = float(strike_raw)
-                if currency == 'EUR':
+                if currency in ['EUR', 'CAD']:
                     strike /= 10000.0
                 elif currency in ['XAU', 'NAS', 'NQ', 'BTC', 'ETH']:
                     pass
@@ -200,7 +200,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                             settle = raw_settle
                         else:
                             settle = raw_settle / 1000.0
-                    elif currency == 'GBP':
+                    elif currency in ['GBP', 'CAD']:
                         is_decimal_quoted = False
                         if '.' in clean_part:
                             num_part = re.sub(r'[^\d.]', '', clean_part).strip()

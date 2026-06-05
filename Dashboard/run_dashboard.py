@@ -60,7 +60,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             currency = params.get('currency', [None])[0]
             
             if currency:
-                search_pattern = os.path.join(DATA_DIR, f"GEX_{currency.upper()}USD_*.csv")
+                curr_upper = currency.upper()
+                if curr_upper == "USDCAD":
+                    search_pattern = os.path.join(DATA_DIR, "GEX_USDCAD_*.csv")
+                else:
+                    search_pattern = os.path.join(DATA_DIR, f"GEX_{curr_upper}USD_*.csv")
             else:
                 search_pattern = os.path.join(DATA_DIR, "GEX_*_*.csv")
                 
@@ -93,7 +97,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             # If no date, find the latest available date for this currency
             if not selected_date:
-                search_pattern = os.path.join(DATA_DIR, f"GEX_{currency}USD_*.csv")
+                if currency == "USDCAD":
+                    search_pattern = os.path.join(DATA_DIR, "GEX_USDCAD_*.csv")
+                else:
+                    search_pattern = os.path.join(DATA_DIR, f"GEX_{currency}USD_*.csv")
                 files = glob.glob(search_pattern)
                 if not files:
                     self.send_error_json(404, f"No files found for currency {currency}")
@@ -109,7 +116,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
                 selected_date = sorted(file_dates, reverse=True)[0]
 
-            csv_name = f"GEX_{currency}USD_{selected_date}.csv"
+            if currency == "USDCAD":
+                csv_name = f"GEX_USDCAD_{selected_date}.csv"
+            else:
+                csv_name = f"GEX_{currency}USD_{selected_date}.csv"
             csv_path = os.path.join(DATA_DIR, csv_name)
 
             if not os.path.exists(csv_path):
@@ -217,7 +227,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 xau_files = glob.glob(os.path.join(mt5_dir, "XAU", "GEX_*.csv"))
                 nas_files = glob.glob(os.path.join(mt5_dir, "NAS100", "GEX_*.csv"))
                 crypto_files = glob.glob(os.path.join(mt5_dir, "Crypto", "GEX_*.csv"))
-                all_paths = root_files + xau_files + nas_files + crypto_files
+                usdcad_files = glob.glob(os.path.join(mt5_dir, "USDCAD", "GEX_*.csv"))
+                all_paths = root_files + xau_files + nas_files + crypto_files + usdcad_files
                 files = [os.path.basename(f) for f in all_paths]
             
             self.send_response(200)
