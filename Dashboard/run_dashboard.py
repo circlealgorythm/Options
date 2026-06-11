@@ -2,6 +2,10 @@ import os
 import sys
 import json
 import glob
+import time
+import datetime
+import urllib.request
+import urllib.error
 import subprocess
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -10,6 +14,84 @@ PORT = 8080
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
+
+LAST_SYNC_ATTEMPT = 0.0
+SYNC_THROTTLE_SECONDS = 900  # 15 minutes throttle
+
+def sync_today_files_from_github():
+    global LAST_SYNC_ATTEMPT
+    
+    # Check if we should throttle
+    now = time.time()
+    if now - LAST_SYNC_ATTEMPT < SYNC_THROTTLE_SECONDS:
+        return
+        
+    LAST_SYNC_ATTEMPT = now
+    
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    currencies = ["EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "ETH", "USDCAD"]
+    
+    missing_files = []
+    for currency in currencies:
+        if currency == "USDCAD":
+            filename = f"GEX_USDCAD_{today_str}.csv"
+        else:
+            filename = f"GEX_{currency}USD_{today_str}.csv"
+        
+        local_path = os.path.join(DATA_DIR, filename)
+        if not os.path.exists(local_path):
+            missing_files.append((currency, filename, local_path))
+            
+    if not missing_files:
+        print(f"[Sync] All today's files ({today_str}) are already present locally. No download needed.")
+        return
+        
+    print(f"[Sync] Found {len(missing_files)} missing files for today ({today_str}). Checking GitHub...")
+    
+    copy_fn = None
+    try:
+        parent_dir = os.path.abspath(os.path.join(BASE_DIR, ".."))
+        if parent_dir not in sys.path:
+            sys.path.append(parent_dir)
+        from main import copy_csv_to_mt5
+        copy_fn = copy_csv_to_mt5
+    except Exception as e:
+        print(f"[Sync] Warning: Could not import copy_csv_to_mt5 from main.py: {e}")
+        
+    mt5_dir = os.environ.get("MT5_GEX_DIR") or DEFAULT_MT5_GEX_DIR
+    
+    for currency, filename, local_path in missing_files:
+        github_url = f"https://raw.githubusercontent.com/circlealgorythm/Options/main/data/{filename}"
+        print(f"[Sync] Fetching {filename} from {github_url} ...")
+        try:
+            req = urllib.request.Request(
+                github_url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                content = response.read()
+                os.makedirs(DATA_DIR, exist_ok=True)
+                with open(local_path, "wb") as f:
+                    f.write(content)
+                print(f"[Sync] Successfully downloaded and saved {filename} to local data/")
+                
+                # Copy to MT5
+                if copy_fn:
+                    copied = copy_fn(local_path, mt5_gex_dir=mt5_dir)
+                    if copied:
+                        print(f"[Sync] Copied {filename} to MT5: {copied}")
+                    else:
+                        print(f"[Sync] Warning: copy_csv_to_mt5 returned None for {filename}")
+                else:
+                    print(f"[Sync] Warning: Skipping copy of {filename} to MT5 (copy function not loaded)")
+        except urllib.error.HTTPError as he:
+            if he.code == 404:
+                print(f"[Sync] File {filename} not yet available on GitHub (404).")
+            else:
+                print(f"[Sync] HTTP error downloading {filename}: {he.code} {he.reason}")
+        except Exception as e:
+            print(f"[Sync] Error downloading {filename}: {e}")
+
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -56,6 +138,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def handle_get_dates(self, query_str):
         try:
+            sync_today_files_from_github()
+        except Exception as se:
+            print(f"[Sync] Error running automatic sync: {se}")
+
+        try:
             params = parse_qs(query_str)
             currency = params.get('currency', [None])[0]
             
@@ -90,6 +177,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error_json(500, f"Error listing dates: {str(e)}")
 
     def handle_get_data(self, query_str):
+        try:
+            sync_today_files_from_github()
+        except Exception as se:
+            print(f"[Sync] Error running automatic sync: {se}")
+
         try:
             params = parse_qs(query_str)
             currency = params.get('currency', ['GBP'])[0].upper()
