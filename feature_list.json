@@ -64,7 +64,7 @@
     "priority": 5,
     "area": "devops_automation",
     "title": "Облачный пайплайн обновления уровней через GitHub Actions",
-    "user_visible_behavior": "Каждое утро в 08:05 MSK данные обновляются в репозитории GitHub автоматически, и индикатор в MT5 скачивает свежие уровни без локального запуска Python на ПК.",
+    "user_visible_behavior": "Каждое утро в 08:30 MSK данные обновляются в репозитории GitHub автоматически, и индикатор в MT5 скачивает свежие уровни без локального запуска Python на ПК.",
     "status": "passing",
     "verification": [
       "1. Проверить успешное выполнение джобы в репозитории GitHub во вкладке Actions.",
@@ -73,5 +73,21 @@
     ],
     "evidence": "GitHub Actions daily pipeline works successfully, files are updated in 'circlealgorythm/Options' repo, and local Dashboard runs auto-sync and copies levels into MT5.",
     "notes": "Обеспечивает автономность работы индикатора без локальной среды Python."
+  },
+  {
+    "id": "sp500_support",
+    "priority": 6,
+    "area": "data_pipeline_and_indicator",
+    "title": "Интеграция S&P 500 (SPX)",
+    "user_visible_behavior": "Пайплайн собирает уровни для S&P 500 (SPX), а индикатор в MT5 отображает их без искажений на графиках S&P 500.",
+    "status": "passing",
+    "verification": [
+      "Парсинг E-mini SPX отчетов CME.",
+      "Размер контракта = 50 для корректного расчета GEX.",
+      "Индикатор поддерживает базовую валюту SPX.",
+      "Файлы сохраняются в MQL5/Files/GEX/NAS100/."
+    ],
+    "evidence": "SPX levels are drawn on chart and verified by the user in screenshot.",
+    "notes": "Contract size multiplier issue resolved."
   }
 ]
