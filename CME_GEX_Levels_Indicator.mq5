@@ -54,10 +54,10 @@ input bool     InpFillZones   = true;              // Fill volatility zones with
 input color    InpColorR68    = C'35,20,20';       // R68 Zone Color (68% probability)
 input color    InpColorR95    = C'20,30,20';       // R95 Zone Color (95% probability)
 
-input group "--- Volatility Regime Flip (Gamma Flip) ---"
-input color    InpColorGammaFlip = C'255,215,0';       // Gamma Flip Level Color (Gold)
-input int      InpWidthGammaFlip = 3;                  // Gamma Flip Line Width
-input ENUM_LINE_STYLE InpStyleGammaFlip = STYLE_SOLID; // Gamma Flip Line Style
+input group "--- Zero Gamma ---"
+input color    InpColorZeroGamma = C'255,215,0';       // Zero Gamma Level Color (Gold)
+input int      InpWidthZeroGamma = 3;                  // Zero Gamma Line Width
+input ENUM_LINE_STYLE InpStyleZeroGamma = STYLE_SOLID; // Zero Gamma Line Style
 
 //--- Global Variables
 datetime       g_last_update = 0;
@@ -241,7 +241,7 @@ void UpdateVisibility()
       if(StringSubstr(name, 0, StringLen(g_obj_prefix)) == g_obj_prefix)
       {
          bool is_ag = (StringFind(name, "_AGL") >= 0);
-         bool is_mdd_r_zones = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0 || StringFind(name, "CMD") >= 0 || StringFind(name, "PMD") >= 0 || StringFind(name, "GammaFlip") >= 0);
+         bool is_mdd_r_zones = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0 || StringFind(name, "CMD") >= 0 || StringFind(name, "PMD") >= 0 || StringFind(name, "ZeroGamma") >= 0);
          bool is_status = (StringFind(name, "UpdateStatus") >= 0);
          
          if(is_status)
@@ -936,24 +936,24 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       }
    }
    
-   // Draw Volatility Regime Flip (Gamma Flip) level
+   // Draw Zero Gamma level
    if(gamma_flip > 0.0)
    {
       double chart_gamma_flip = gamma_flip + fw_offset;
-      string flip_name = StringFormat("%s%s_%s_GammaFlip", g_obj_prefix, g_base_currency, date_str);
+      string flip_name = StringFormat("%s%s_%s_ZeroGamma", g_obj_prefix, g_base_currency, date_str);
       ObjectDelete(0, flip_name);
       if(ObjectCreate(0, flip_name, OBJ_TREND, 0, time_start, chart_gamma_flip, time_end, chart_gamma_flip))
       {
          ObjectSetInteger(0, flip_name, OBJPROP_RAY_RIGHT, false);
          ObjectSetInteger(0, flip_name, OBJPROP_RAY_LEFT, false);
-         ObjectSetInteger(0, flip_name, OBJPROP_COLOR, InpColorGammaFlip);
-         ObjectSetInteger(0, flip_name, OBJPROP_WIDTH, InpWidthGammaFlip);
-         ObjectSetInteger(0, flip_name, OBJPROP_STYLE, InpStyleGammaFlip);
+         ObjectSetInteger(0, flip_name, OBJPROP_COLOR, InpColorZeroGamma);
+         ObjectSetInteger(0, flip_name, OBJPROP_WIDTH, InpWidthZeroGamma);
+         ObjectSetInteger(0, flip_name, OBJPROP_STYLE, InpStyleZeroGamma);
          ObjectSetInteger(0, flip_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, flip_name, OBJPROP_HIDDEN, true);
          ObjectSetInteger(0, flip_name, OBJPROP_BACK, false);
          ObjectSetString(0, flip_name, OBJPROP_TOOLTIP, 
-                         StringFormat("Date: %s | Gamma Flip level chart/spot: %.5f | futures: %.5f", 
+                         StringFormat("Date: %s | Zero Gamma level chart/spot: %.5f | futures: %.5f", 
                                       date_str, chart_gamma_flip, gamma_flip));
          
          // Text label next to the line
@@ -962,8 +962,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          datetime flip_txt_time = time_start + 3600;
          if(ObjectCreate(0, flip_txt, OBJ_TEXT, 0, flip_txt_time, chart_gamma_flip))
          {
-            ObjectSetString(0, flip_txt, OBJPROP_TEXT, "Gamma Flip");
-            ObjectSetInteger(0, flip_txt, OBJPROP_COLOR, InpColorGammaFlip);
+            ObjectSetString(0, flip_txt, OBJPROP_TEXT, "Zero Gamma");
+            ObjectSetInteger(0, flip_txt, OBJPROP_COLOR, InpColorZeroGamma);
             ObjectSetInteger(0, flip_txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, flip_txt, OBJPROP_FONT, "Consolas");
             ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
