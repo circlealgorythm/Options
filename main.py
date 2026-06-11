@@ -87,6 +87,14 @@ CAD_DAILY_CODE_DOW = {
 }
 CAD_WEEKLY_CODE_DOW = CAD_DAILY_CODE_DOW.copy()
 
+SPX_DAILY_BY_WEEKDAY = {0: 'WK', 1: 'WK', 2: 'WK', 3: 'WK', 4: 'EMINI'}
+SPX_DAILY_CODES = ['WK', 'EMINI', 'SME']
+SPX_WEEKLY_CODES = SPX_DAILY_CODES.copy()
+SPX_DAILY_CODE_DOW = {
+    'WK': 4, 'EMINI': 4, 'SME': 4
+}
+SPX_WEEKLY_CODE_DOW = SPX_DAILY_CODE_DOW.copy()
+
 
 def month_sort_key(month):
     if not isinstance(month, str) or len(month) < 5:
@@ -127,33 +135,54 @@ def filter_nearest_code(df, code_dow_map, as_of_date):
 
 
 def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
-    target_dir = mt5_gex_dir or os.environ.get("MT5_GEX_DIR") or DEFAULT_MT5_GEX_DIR
-    if not target_dir or not os.path.isdir(target_dir):
-        print(f"MT5 GEX directory not found, skipping local copy: {target_dir}")
-        return None
-
+    import shutil
+    import os
     filename = os.path.basename(csv_path)
-    if "XAUUSD" in filename:
-        target_dir = os.path.join(target_dir, "XAU")
-        os.makedirs(target_dir, exist_ok=True)
-    elif "NASUSD" in filename:
-        target_dir = os.path.join(target_dir, "NAS100")
-        os.makedirs(target_dir, exist_ok=True)
-    elif "BTCUSD" in filename or "ETHUSD" in filename:
-        target_dir = os.path.join(target_dir, "Crypto")
-        os.makedirs(target_dir, exist_ok=True)
-    elif "USDCAD" in filename:
-        target_dir = os.path.join(target_dir, "USDCAD")
-        os.makedirs(target_dir, exist_ok=True)
+    sub_dir = ''
+    if 'XAU' in filename:
+        sub_dir = 'XAU'
+    elif 'NAS' in filename or 'SPX' in filename:
+        sub_dir = 'NAS100'
+    elif 'BTC' in filename or 'ETH' in filename:
+        sub_dir = 'Crypto'
+    elif 'USDCAD' in filename or 'CAD' in filename:
+        sub_dir = 'USDCAD'
 
-    target_path = os.path.join(target_dir, filename)
-    try:
-        shutil.copy2(csv_path, target_path)
-        print(f"Copied {os.path.basename(csv_path)} to MT5 GEX directory: {target_path}")
-        return target_path
-    except OSError as exc:
-        print(f"Warning: failed to copy {csv_path} to {target_path}: {exc}")
-        return None
+    copied_path = None
+
+    if mt5_gex_dir:
+        files_gex_dir = os.path.join(mt5_gex_dir, sub_dir) if sub_dir else mt5_gex_dir
+        os.makedirs(files_gex_dir, exist_ok=True)
+        try:
+            dest_file = os.path.join(files_gex_dir, filename)
+            shutil.copy2(csv_path, dest_file)
+            print(f'Copied {filename} to {files_gex_dir}')
+            copied_path = dest_file
+        except Exception as e:
+            print(f'Error copying to {files_gex_dir}: {e}')
+    else:
+        paths_to_check = [
+            r'C:\Program Files',
+            r'C:\Program Files (x86)',
+            os.path.join(os.environ.get('APPDATA', ''), 'MetaQuotes', 'Terminal')
+        ]
+        for base in paths_to_check:
+            if not os.path.exists(base):
+                continue
+            for root, dirs, files in os.walk(base):
+                if 'MQL5' in dirs:
+                    files_gex_dir = os.path.join(root, 'MQL5', 'Files', 'GEX', sub_dir)
+                    os.makedirs(files_gex_dir, exist_ok=True)
+                    try:
+                        dest_file = os.path.join(files_gex_dir, filename)
+                        shutil.copy2(csv_path, dest_file)
+                        print(f'Copied {filename} to {files_gex_dir}')
+                        copied_path = dest_file
+                    except Exception as e:
+                        pass
+                    dirs.remove('MQL5')
+
+    return copied_path
 
 
 def cleanup_old_files(target_dir=None, days_to_keep=30):
@@ -273,6 +302,21 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
 
         daily = calc_df[calc_df['Option_Type'].isin(CAD_DAILY_CODES)]
         return filter_nearest_month(filter_nearest_code(daily, CAD_DAILY_CODE_DOW, as_of_date))
+    if currency == 'SPX':
+        target_code = SPX_DAILY_BY_WEEKDAY.get(dow)
+        exact = calc_df[calc_df['Option_Type'] == target_code]
+        if not exact.empty:
+            return filter_nearest_month(exact)
+
+        weekly = calc_df[calc_df['Option_Type'].isin(SPX_WEEKLY_CODES)]
+        if not weekly.empty:
+            return filter_nearest_month(filter_nearest_code(weekly, SPX_WEEKLY_CODE_DOW, as_of_date))
+
+        daily = calc_df[calc_df['Option_Type'].isin(SPX_DAILY_CODES)]
+        if not daily.empty:
+            return filter_nearest_month(filter_nearest_code(daily, SPX_DAILY_CODE_DOW, as_of_date))
+        return filter_nearest_month(calc_df)
+
 
     return pd.DataFrame(columns=calc_df.columns)
 
@@ -368,7 +412,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
     print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
     
-    contract_size = 100000 if currency == 'USDCAD' else (5 if currency == 'BTC' else (50 if currency == 'ETH' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else 62500)))))
+    contract_size = 100000 if currency == 'USDCAD' else (5 if currency == 'BTC' else (50 if currency == 'ETH' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else (50 if currency == 'SPX' else 62500))))))
     T = 0.08
     r = 0.0
     
@@ -441,7 +485,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         'NAS': ['EMINI'],
         'BTC': ['BTC'],
         'ETH': ['ETH'],
-        'USDCAD': ['CAU']
+        'USDCAD': ['CAU'],
+        'SPX': ['EMINI']
     }.get(currency, ['OG'])
     global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
     if not global_df.empty:
@@ -520,72 +565,111 @@ if __name__ == "__main__":
     
     # Step 2: Parse and process EUR data
     if eur_ok:
-        eur_bulletin_date = extract_bulletin_date(eur_dest) or datetime.date.today()
-        session_date = datetime.date.today()
-        print(f"[EUR] CME bulletin trade date: {eur_bulletin_date}; session date: {session_date}")
-        eur_raw = parse_cme_pdf(eur_dest, "EUR", is_call_only=None)
-        calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR, session_date)
+        try:
+            eur_bulletin_date = extract_bulletin_date(eur_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[EUR] CME bulletin trade date: {eur_bulletin_date}; session date: {session_date}")
+            eur_raw = parse_cme_pdf(eur_dest, "EUR", is_call_only=None)
+            calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR, session_date)
+        except Exception as e:
+            print(f"[EUR] Error during processing: {e}")
         
     # Step 3: Parse and process GBP data
     if gbp_call_ok and gbp_put_ok:
-        gbp_bulletin_date = extract_bulletin_date(gbp_call_dest) or extract_bulletin_date(gbp_put_dest) or datetime.date.today()
-        session_date = datetime.date.today()
-        print(f"[GBP] CME bulletin trade date: {gbp_bulletin_date}; session date: {session_date}")
-        gbp_calls = parse_cme_pdf(gbp_call_dest, "GBP", is_call_only=True)
-        gbp_puts = parse_cme_pdf(gbp_put_dest, "GBP", is_call_only=False)
-        gbp_raw = pd.concat([gbp_calls, gbp_puts])
-        calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR, session_date)
+        try:
+            gbp_bulletin_date = extract_bulletin_date(gbp_call_dest) or extract_bulletin_date(gbp_put_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[GBP] CME bulletin trade date: {gbp_bulletin_date}; session date: {session_date}")
+            gbp_calls = parse_cme_pdf(gbp_call_dest, "GBP", is_call_only=True)
+            gbp_puts = parse_cme_pdf(gbp_put_dest, "GBP", is_call_only=False)
+            gbp_raw = pd.concat([gbp_calls, gbp_puts])
+            calculate_gex_pipeline(gbp_raw, "GBP", DATA_DIR, session_date)
+        except Exception as e:
+            print(f"[GBP] Error during processing: {e}")
 
     # Step 4: Parse and process XAU data
     xau_section = "Section64_Metals_Option_Products.pdf"
     xau_dest = os.path.join(DATA_DIR, xau_section)
     xau_ok = download_cme_bulletin(xau_section, xau_dest)
     if xau_ok:
-        xau_bulletin_date = extract_bulletin_date(xau_dest) or datetime.date.today()
-        session_date = datetime.date.today()
-        print(f"[XAU] CME bulletin trade date: {xau_bulletin_date}; session date: {session_date}")
-        xau_raw = parse_cme_pdf(xau_dest, "XAU", is_call_only=None)
-        if not xau_raw.empty:
-            gold_option_types = ['OG', 'GMW', 'GWT', 'GWW', 'GWR', 'OG1', 'OG2', 'OG3', 'OG4', 'OG5', 'MMG', 'FMG']
-            xau_raw = xau_raw[xau_raw['Option_Type'].isin(gold_option_types)]
-        calculate_gex_pipeline(xau_raw, "XAU", DATA_DIR, session_date)
+        try:
+            xau_bulletin_date = extract_bulletin_date(xau_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[XAU] CME bulletin trade date: {xau_bulletin_date}; session date: {session_date}")
+            xau_raw = parse_cme_pdf(xau_dest, "XAU", is_call_only=None)
+            if not xau_raw.empty:
+                gold_option_types = ['OG', 'GMW', 'GWT', 'GWW', 'GWR', 'OG1', 'OG2', 'OG3', 'OG4', 'OG5', 'MMG', 'FMG']
+                xau_raw = xau_raw[xau_raw['Option_Type'].isin(gold_option_types)]
+            calculate_gex_pipeline(xau_raw, "XAU", DATA_DIR, session_date)
+        except Exception as e:
+            print(f"[XAU] Error during processing: {e}")
 
     # Step 5: Parse and process NAS data
     nas_section = "Section40_Nasdaq_100_And_E_Mini_Nasdaq_100_Options.pdf"
     nas_dest = os.path.join(DATA_DIR, nas_section)
     nas_ok = download_cme_bulletin(nas_section, nas_dest)
     if nas_ok:
-        nas_bulletin_date = extract_bulletin_date(nas_dest) or datetime.date.today()
-        session_date = datetime.date.today()
-        print(f"[NAS] CME bulletin trade date: {nas_bulletin_date}; session date: {session_date}")
-        nas_raw = parse_cme_pdf(nas_dest, "NAS", is_call_only=None)
-        if not nas_raw.empty:
-            nas_raw = nas_raw[nas_raw['Strike'] >= 10000.0]
-        calculate_gex_pipeline(nas_raw, "NAS", DATA_DIR, session_date)
+        try:
+            nas_bulletin_date = extract_bulletin_date(nas_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[NAS] CME bulletin trade date: {nas_bulletin_date}; session date: {session_date}")
+            nas_raw = parse_cme_pdf(nas_dest, "NAS", is_call_only=None)
+            if not nas_raw.empty:
+                nas_raw = nas_raw[nas_raw['Strike'] >= 10000.0]
+            calculate_gex_pipeline(nas_raw, "NAS", DATA_DIR, session_date)
+        except Exception as e:
+            print(f"[NAS] Error during processing: {e}")
+
+    # Step 5b: Parse and process S&P 500 data
+    sp_call_section = "Section47_E_Mini_S_And_P_500_Call_Options.pdf"
+    sp_put_section = "Section48_E_Mini_S_And_P_500_Put_Options.pdf"
+    
+    sp_call_dest = os.path.join(DATA_DIR, sp_call_section)
+    sp_put_dest = os.path.join(DATA_DIR, sp_put_section)
+    
+    sp_call_ok = download_cme_bulletin(sp_call_section, sp_call_dest)
+    sp_put_ok = download_cme_bulletin(sp_put_section, sp_put_dest)
+    
+    if sp_call_ok and sp_put_ok:
+        try:
+            sp_bulletin_date = extract_bulletin_date(sp_call_dest) or extract_bulletin_date(sp_put_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[SPX] CME bulletin trade date: {sp_bulletin_date}; session date: {session_date}")
+            sp_calls = parse_cme_pdf(sp_call_dest, "SPX", is_call_only=True)
+            sp_puts = parse_cme_pdf(sp_put_dest, "SPX", is_call_only=False)
+            sp_raw = pd.concat([sp_calls, sp_puts])
+            if not sp_raw.empty:
+                sp_raw = sp_raw[sp_raw['Strike'] >= 2000.0]
+            calculate_gex_pipeline(sp_raw, "SPX", DATA_DIR, session_date)
+        except Exception as e:
+            print(f"[SPX] Error during processing: {e}")
 
     # Step 6: Parse and process Crypto data
     crypto_section = "Section74_Cryptocurrency.pdf"
     crypto_dest = os.path.join(DATA_DIR, crypto_section)
     crypto_ok = download_cme_bulletin(crypto_section, crypto_dest)
     if crypto_ok:
-        crypto_bulletin_date = extract_bulletin_date(crypto_dest) or datetime.date.today()
-        session_date = datetime.date.today()
-        print(f"[Crypto] CME bulletin trade date: {crypto_bulletin_date}; session date: {session_date}")
-        crypto_raw = parse_cme_pdf(crypto_dest, "BTC", is_call_only=None)
-        
-        # Process BTC
-        btc_raw = crypto_raw[crypto_raw['Option_Type'] == 'BTC']
-        if not btc_raw.empty:
-            calculate_gex_pipeline(btc_raw, "BTC", DATA_DIR, session_date)
-        else:
-            print("[Crypto] Warning: No BTC option rows found.")
+        try:
+            crypto_bulletin_date = extract_bulletin_date(crypto_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[Crypto] CME bulletin trade date: {crypto_bulletin_date}; session date: {session_date}")
+            crypto_raw = parse_cme_pdf(crypto_dest, "BTC", is_call_only=None)
             
-        # Process ETH
-        eth_raw = crypto_raw[crypto_raw['Option_Type'] == 'ETH']
-        if not eth_raw.empty:
-            calculate_gex_pipeline(eth_raw, "ETH", DATA_DIR, session_date)
-        else:
-            print("[Crypto] Warning: No ETH option rows found.")
+            # Process BTC
+            btc_raw = crypto_raw[crypto_raw['Option_Type'] == 'BTC']
+            if not btc_raw.empty:
+                calculate_gex_pipeline(btc_raw, "BTC", DATA_DIR, session_date)
+            else:
+                print("[Crypto] Warning: No BTC option rows found.")
+                
+            # Process ETH
+            eth_raw = crypto_raw[crypto_raw['Option_Type'] == 'ETH']
+            if not eth_raw.empty:
+                calculate_gex_pipeline(eth_raw, "ETH", DATA_DIR, session_date)
+            else:
+                print("[Crypto] Warning: No ETH option rows found.")
+        except Exception as e:
+            print(f"[Crypto] Error during processing: {e}")
 
     # Step 7: Parse and process USDCAD data
     cad_call_section = "Section29_Canadian_Dollar_Call_Options.pdf"
@@ -597,32 +681,35 @@ if __name__ == "__main__":
     cad_put_ok = download_cme_bulletin(cad_put_section, cad_put_dest)
     
     if cad_call_ok and cad_put_ok:
-        cad_bulletin_date = extract_bulletin_date(cad_call_dest) or extract_bulletin_date(cad_put_dest) or datetime.date.today()
-        session_date = datetime.date.today()
-        print(f"[USDCAD] CME bulletin trade date: {cad_bulletin_date}; session date: {session_date}")
-        cad_calls = parse_cme_pdf(cad_call_dest, "CAD", is_call_only=True)
-        cad_puts = parse_cme_pdf(cad_put_dest, "CAD", is_call_only=False)
-        cad_raw = pd.concat([cad_calls, cad_puts]).reset_index(drop=True)
-        
-        if not cad_raw.empty:
-            atm_rows = cad_raw[(cad_raw['Delta'] >= 0.45) & (cad_raw['Delta'] <= 0.55)]
-            if not atm_rows.empty:
-                nearest_m = nearest_month(atm_rows['Contract_Month'].dropna().unique())
-                if nearest_m:
-                    cad_spot = atm_rows[atm_rows['Contract_Month'] == nearest_m]['Strike'].mean()
+        try:
+            cad_bulletin_date = extract_bulletin_date(cad_call_dest) or extract_bulletin_date(cad_put_dest) or datetime.date.today()
+            session_date = datetime.date.today()
+            print(f"[USDCAD] CME bulletin trade date: {cad_bulletin_date}; session date: {session_date}")
+            cad_calls = parse_cme_pdf(cad_call_dest, "CAD", is_call_only=True)
+            cad_puts = parse_cme_pdf(cad_put_dest, "CAD", is_call_only=False)
+            cad_raw = pd.concat([cad_calls, cad_puts]).reset_index(drop=True)
+            
+            if not cad_raw.empty:
+                atm_rows = cad_raw[(cad_raw['Delta'] >= 0.45) & (cad_raw['Delta'] <= 0.55)]
+                if not atm_rows.empty:
+                    nearest_m = nearest_month(atm_rows['Contract_Month'].dropna().unique())
+                    if nearest_m:
+                        cad_spot = atm_rows[atm_rows['Contract_Month'] == nearest_m]['Strike'].mean()
+                    else:
+                        cad_spot = atm_rows['Strike'].mean()
                 else:
-                    cad_spot = atm_rows['Strike'].mean()
-            else:
-                cad_spot = 0.7200
+                    cad_spot = 0.7200
+                    
+                print(f"[CAD] Detected raw CADUSD spot price for conversion: {cad_spot:.5f}")
                 
-            print(f"[CAD] Detected raw CADUSD spot price for conversion: {cad_spot:.5f}")
-            
-            usdcad_raw = cad_raw.copy()
-            usdcad_raw['Strike'] = 1.0 / cad_raw['Strike']
-            usdcad_raw['Is_Call'] = ~cad_raw['Is_Call']
-            usdcad_raw['Settle'] = cad_raw['Settle'] / (cad_raw['Strike'] * cad_spot)
-            
-            calculate_gex_pipeline(usdcad_raw, "USDCAD", DATA_DIR, session_date)
+                usdcad_raw = cad_raw.copy()
+                usdcad_raw['Strike'] = 1.0 / cad_raw['Strike']
+                usdcad_raw['Is_Call'] = ~cad_raw['Is_Call']
+                usdcad_raw['Settle'] = cad_raw['Settle'] / (cad_raw['Strike'] * cad_spot)
+                
+                calculate_gex_pipeline(usdcad_raw, "USDCAD", DATA_DIR, session_date)
+        except Exception as e:
+            print(f"[USDCAD] Error during processing: {e}")
 
     # Step 8: Clean up old GEX files in MT5 directory (keep 30 days)
     cleanup_old_files()

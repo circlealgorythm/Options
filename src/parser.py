@@ -148,7 +148,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 strike = float(strike_raw)
                 if currency in ['EUR', 'CAD']:
                     strike /= 10000.0
-                elif currency in ['XAU', 'NAS', 'NQ', 'BTC', 'ETH']:
+                elif currency in ['XAU', 'NAS', 'NQ', 'BTC', 'ETH', 'SPX']:
                     pass
                 else:
                     strike /= 1000.0

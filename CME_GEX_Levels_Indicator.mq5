@@ -82,18 +82,40 @@ int OnInit()
       g_base_currency = "ETH";
    else if(StringFind(symbol, "CAD") >= 0)
       g_base_currency = "CAD";
+   else if(StringFind(symbol, "SPX") >= 0 || StringFind(symbol, "SP500") >= 0 || StringFind(symbol, "US500") >= 0 || StringFind(symbol, "ES") >= 0 || StringFind(symbol, "S&P500") >= 0)
+      g_base_currency = "SPX";
    else
    {
-      Alert("Symbol ", symbol, " is not supported. Supported: EUR, GBP, XAU/GOLD, NAS100, BTCUSD, ETHUSD, USDCAD.");
+      Alert("Symbol ", symbol, " is not supported. Supported: EUR, GBP, XAU/GOLD, NAS100, SPX500, BTCUSD, ETHUSD, USDCAD.");
       return(INIT_FAILED);
    }
 
    Print("CME GEX Indicator initialized for ", g_base_currency, "USD. Loading historical levels...");
    
+   string gv_gex = "CMEGEX_GEX_" + IntegerToString(ChartID());
+   string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
+   if(GlobalVariableCheck(gv_gex))
+      g_show_gex = (bool)GlobalVariableGet(gv_gex);
+   if(GlobalVariableCheck(gv_ag))
+      g_show_ag = (bool)GlobalVariableGet(gv_ag);
+   
    CreateButtons();
    EventSetTimer(3600); // Trigger timer event every hour
    
-   UpdateLevels();
+   bool history_desynced = false;
+   string gv_desync = "CMEGEX_Desync_" + IntegerToString(ChartID());
+   if(GlobalVariableCheck(gv_desync))
+      history_desynced = (GlobalVariableGet(gv_desync) > 0.0);
+   
+   if(!history_desynced && ObjectsExistForCurrentSymbol())
+   {
+      Print("Objects for current symbol already exist. Skipping redraw to optimize timeframe switch.");
+      UpdateVisibility();
+   }
+   else
+   {
+      UpdateLevels();
+   }
    
    return(INIT_SUCCEEDED);
 }
@@ -105,8 +127,36 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    DeleteButtons();
-   CleanUpObjects();
-   Print("CME GEX Indicator deinitialized and objects cleaned up.");
+   
+   if(reason != REASON_CHARTCHANGE)
+   {
+      CleanUpObjects();
+      string gv_gex = "CMEGEX_GEX_" + IntegerToString(ChartID());
+      string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
+      string gv_desync = "CMEGEX_Desync_" + IntegerToString(ChartID());
+      GlobalVariableDel(gv_gex);
+      GlobalVariableDel(gv_ag);
+      GlobalVariableDel(gv_desync);
+      Print("CME GEX Indicator deinitialized and objects cleaned up.");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if objects exist for current symbol                        |
+//+------------------------------------------------------------------+
+bool ObjectsExistForCurrentSymbol()
+{
+   string prefix = g_obj_prefix + g_base_currency + "_";
+   int total_objects = ObjectsTotal(0);
+   for(int i = 0; i < total_objects; i++)
+   {
+      string name = ObjectName(0, i);
+      if(StringSubstr(name, 0, StringLen(prefix)) == prefix)
+      {
+         return true;
+      }
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -214,9 +264,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 {
    if(id == CHARTEVENT_OBJECT_CLICK)
    {
+      string gv_gex = "CMEGEX_GEX_" + IntegerToString(ChartID());
+      string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
+      
       if(sparam == "Btn_ShowGEX")
       {
          g_show_gex = !g_show_gex;
+         GlobalVariableSet(gv_gex, g_show_gex);
          UpdateToggleButton("Btn_ShowGEX", "GEX", g_show_gex);
          UpdateVisibility();
          ObjectSetInteger(0, "Btn_ShowGEX", OBJPROP_STATE, false); // Reset button state
@@ -224,6 +278,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       else if(sparam == "Btn_ShowAG")
       {
          g_show_ag = !g_show_ag;
+         GlobalVariableSet(gv_ag, g_show_ag);
          UpdateToggleButton("Btn_ShowAG", "AG", g_show_ag);
          UpdateVisibility();
          ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_STATE, false); // Reset button state
@@ -250,6 +305,7 @@ void OnTimer()
 void UpdateLevels()
 {
    CleanUpObjects();
+   GlobalVariableSet("CMEGEX_Desync_" + IntegerToString(ChartID()), 0.0);
    
    Print("Fetching option levels...");
    g_last_update = TimeCurrent();
@@ -388,7 +444,7 @@ bool FetchAndParseDate(string date_str, string &out_month)
    string local_file_path = "GEX\\";
    if(g_base_currency == "XAU")
       local_file_path += "XAU\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
-   else if(g_base_currency == "NAS")
+   else if(g_base_currency == "NAS" || g_base_currency == "SPX")
       local_file_path += "NAS100\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
    else if(g_base_currency == "BTC" || g_base_currency == "ETH")
       local_file_path += "Crypto\\GEX_" + g_base_currency + "USD_" + date_str + ".csv";
@@ -587,6 +643,7 @@ double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_
       if(spot_reference <= 0.0 && is_today)
       {
          spot_reference = SymbolInfoDouble(symbol, SYMBOL_BID);
+         GlobalVariableSet("CMEGEX_Desync_" + IntegerToString(ChartID()), 1.0);
       }
       
       if(spot_reference > 0.0)
