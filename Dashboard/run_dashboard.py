@@ -229,7 +229,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "r95_high": 0.0,
                 "r95_low": 0.0,
                 "global_month": "UNKNOWN",
-                "daily_month": "UNKNOWN"
+                "daily_month": "UNKNOWN",
+                "gamma_flip": 0.0
             }
 
             with open(csv_path, 'r', encoding='utf-8') as f:
@@ -261,10 +262,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     r95_l_idx = headers.index("R95_Low") if "R95_Low" in headers else -1
                     g_month_idx = headers.index("Global_Month") if "Global_Month" in headers else -1
                     d_month_idx = headers.index("Daily_Month") if "Daily_Month" in headers else -1
+                    gamma_flip_idx = headers.index("Gamma_Flip") if "Gamma_Flip" in headers else -1
                 except ValueError as ve:
                     self.send_error_json(500, f"Missing required column in GEX CSV: {str(ve)}")
                     return
-
+ 
                 # Read rows
                 first_row = True
                 for line in lines[1:]:
@@ -274,7 +276,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     parts = [p.strip() for p in line.split(',')]
                     if len(parts) < len(headers):
                         continue
-
+ 
                     # Extract metadata from the first row
                     if first_row:
                         first_row = False
@@ -285,6 +287,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         if r95_l_idx != -1: metadata["r95_low"] = float(parts[r95_l_idx])
                         if g_month_idx != -1: metadata["global_month"] = parts[g_month_idx]
                         if d_month_idx != -1: metadata["daily_month"] = parts[d_month_idx]
+                        if gamma_flip_idx != -1 and gamma_flip_idx < len(parts):
+                            metadata["gamma_flip"] = float(parts[gamma_flip_idx])
 
                     levels.append({
                         "strike": float(parts[strike_idx]),

@@ -79,3 +79,26 @@
    python main.py
    ```
 4. Сгенерированные файлы сохранятся в папку `data/` и будут готовы к пушу в репозиторий.
+
+---
+
+## Справка по скачиваемым отчетам CME (Daily Bulletin PDF Sections)
+
+Пайплайн в `main.py` автоматически скачивает официальные ежедневные бюллетени CME Group. Все отчеты и секции публикуются на официальной странице CME Group Daily Bulletin:
+* **Сайт-источник:** [CME Group Daily Bulletin](https://www.cmegroup.com/market-data/daily-bulletin.html) (директория для загрузки файлов: `https://www.cmegroup.com/daily_bulletin/current/`)
+
+Секции по конкретным активам:
+* **EURUSD (Euro FX):** 
+  `Section39_Euro_FX_And_Cme$Index_Options.pdf` (совмещенный файл Call и Put).
+* **GBPUSD (British Pound):** 
+  `Section27_British_Pound_Call_Options.pdf` (Call) и `Section28_British_Pound_Put_Options.pdf` (Put).
+* **XAUUSD (Gold):** 
+  `Section64_Metals_Option_Products.pdf` (золотые опционные контракты: OG, GMW, GWT и др.).
+* **NAS100 (Nasdaq-100):** 
+  `Section40_Nasdaq_100_And_E_Mini_Nasdaq_100_Options.pdf` (контракты E-mini Nasdaq-100).
+* **SPX500 (S&P 500):** 
+  `Section47_E_Mini_S_And_P_500_Call_Options.pdf` (Call) и `Section48_E_Mini_S_And_P_500_Put_Options.pdf` (Put).
+* **Cryptocurrency (BTCUSD & ETHUSD):** 
+  `Section74_Cryptocurrency.pdf` (опционы на Bitcoin и Ether).
+* **USDCAD (Canadian Dollar):** 
+  `Section29_Canadian_Dollar_Call_Options.pdf` (Call) и `Section30_Canadian_Dollar_Put_Options.pdf` (Put, с автоматической инверсией страйков/премий в USDCAD).

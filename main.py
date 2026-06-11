@@ -5,7 +5,7 @@ import shutil
 import pandas as pd
 import pdfplumber
 from src.parser import download_cme_bulletin, extract_bulletin_date, parse_cme_pdf
-from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma
+from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma, find_gamma_flip
 
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 
@@ -24,7 +24,7 @@ import shutil
 import pandas as pd
 import pdfplumber
 from src.parser import download_cme_bulletin, extract_bulletin_date, parse_cme_pdf
-from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma
+from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma, find_gamma_flip
 
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 
@@ -417,6 +417,11 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     r = 0.0
     
     calculated_rows = []
+    strikes_list = []
+    ois_list = []
+    is_calls_list = []
+    ivs_list = []
+    
     for idx, row in raw_df.iterrows():
         K = row['Strike']
         
@@ -464,7 +469,15 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             "Put_Settle": put_settle
         })
         
+        strikes_list.append(K)
+        ois_list.append(row['OI'])
+        is_calls_list.append(is_call)
+        ivs_list.append(iv)
+        
     calc_df = pd.DataFrame(calculated_rows)
+    gamma_flip_val = find_gamma_flip(strikes_list, ois_list, is_calls_list, ivs_list, spot, T, r)
+    print(f"[{currency}] Calculated Gamma Flip level: {gamma_flip_val:.5f}")
+
     
     def get_max_oi_level(df, type_prefix):
         oi_col = f'{type_prefix}_OI'
@@ -534,6 +547,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
 
     # Store futures spot price directly so EA doesn't derive it from R68
     summary['Futures_Spot'] = spot
+    summary['Gamma_Flip'] = gamma_flip_val
 
     validate_mdd_summary(summary, currency)
     

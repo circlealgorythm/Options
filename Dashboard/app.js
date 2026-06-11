@@ -93,7 +93,7 @@ function formatGEX(value) {
 function loadSavedState() {
     // 1. Currency Pair
     const savedCurrency = localStorage.getItem('gex_dashboard_currency');
-    if (savedCurrency === 'GBP' || savedCurrency === 'EUR' || savedCurrency === 'XAU' || savedCurrency === 'NAS' || savedCurrency === 'BTC' || savedCurrency === 'ETH' || savedCurrency === 'USDCAD') {
+    if (savedCurrency === 'GBP' || savedCurrency === 'EUR' || savedCurrency === 'XAU' || savedCurrency === 'NAS' || savedCurrency === 'SPX' || savedCurrency === 'BTC' || savedCurrency === 'ETH' || savedCurrency === 'USDCAD') {
         state.currency = savedCurrency;
         elements.currencyTabs.forEach(t => {
             if (t.dataset.currency === savedCurrency) {
@@ -158,7 +158,7 @@ function loadSavedState() {
         state.noiseThresholdPercent = parseFloat(savedNoise);
     } else {
         // Set dynamic default based on currency
-        state.noiseThresholdPercent = state.currency === 'XAU' ? 5.0 : (state.currency === 'NAS' ? 2.0 : (state.currency === 'BTC' || state.currency === 'ETH' ? 2.0 : 1.0));
+        state.noiseThresholdPercent = state.currency === 'XAU' ? 5.0 : (state.currency === 'NAS' || state.currency === 'SPX' ? 2.0 : (state.currency === 'BTC' || state.currency === 'ETH' ? 2.0 : 1.0));
     }
     
     if (elements.noiseFilterSlider) {
@@ -185,8 +185,8 @@ function formatGamma(value) {
 }
 
 function formatPrice(value) {
-    if (value === undefined || isNaN(value)) return (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH') ? '0.00' : '0.0000';
-    return (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH') ? value.toFixed(2) : value.toFixed(4);
+    if (value === undefined || isNaN(value)) return (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH') ? '0.00' : '0.0000';
+    return (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH') ? value.toFixed(2) : value.toFixed(4);
 }
 
 // Start live clock widget
@@ -384,7 +384,7 @@ function updateMetrics(payload) {
     }
     
     // Zero Gamma
-    const zeroGammaStrike = findZeroGammaStrike(levels, meta.spot);
+    const zeroGammaStrike = (meta.gamma_flip && meta.gamma_flip > 0) ? meta.gamma_flip : findZeroGammaStrike(levels, meta.spot);
     state.zeroGamma = zeroGammaStrike;
     elements.metricZeroGamma.textContent = formatPrice(zeroGammaStrike);
     
@@ -446,7 +446,7 @@ function renderTable(levels, spot) {
             badgeText: 'FUT SPOT'
         });
 
-        const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH';
+        const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH';
 
         // 2. Daily Call MDD
         if (dailyCallRow) {
@@ -579,7 +579,7 @@ function renderTable(levels, spot) {
         calcLevels.sort((a, b) => b.price - a.price);
 
         elements.tableBody.innerHTML = calcLevels.map(lvl => {
-            const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH';
+            const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH';
             const pipSize = isXAU ? 1.0 : 0.0001;
             const distPips = (lvl.price - spot) / pipSize;
             let distHtml = '';
@@ -642,6 +642,19 @@ function renderTable(levels, spot) {
                 closestStrike = l.strike;
             }
         });
+
+        // Find closest strike to Zero Gamma
+        let closestZeroGammaStrike = null;
+        let minZeroDiff = Infinity;
+        if (state.zeroGamma) {
+            sortedLevels.forEach(l => {
+                const diff = Math.abs(l.strike - state.zeroGamma);
+                if (diff < minZeroDiff) {
+                    minZeroDiff = diff;
+                    closestZeroGammaStrike = l.strike;
+                }
+            });
+        }
         
         const rowsHtml = sortedLevels.map(l => {
             let rowClass = '';
@@ -651,7 +664,7 @@ function renderTable(levels, spot) {
                 rowClass = 'strike-spot';
                 badgeHtml += '<span class="level-badge badge-bg-cyan">Спот ATM</span> ';
             }
-            if (l.strike === state.zeroGamma) {
+            if (state.zeroGamma && l.strike === closestZeroGammaStrike) {
                 rowClass = 'strike-zero-gamma';
                 badgeHtml += '<span class="level-badge badge-bg-gold">Zero Gamma</span> ';
             }
@@ -676,7 +689,7 @@ function renderTable(levels, spot) {
             // Filter key strikes: must have at least one badge
             if (badgeHtml === '') return '';
             
-            const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH';
+            const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH';
             
             // Match Search filter
             const matchesSearch = state.search === '' || (isXAU ? l.strike.toFixed(2) : l.strike.toFixed(4)).includes(state.search);
@@ -773,11 +786,9 @@ function renderChart(payload) {
         Math.abs(curr.strike - spot) < Math.abs(prev.strike - spot) ? curr : prev
     );
     const closestStrike = closestStrikeRow.strike;
-    
     // Identify active strikes (Spot, Zero Gamma, Max Abs Gamma, Daily levels, Global levels)
     const activeStrikes = sortedData.filter(l => {
         const isKey = l.strike === closestStrike || 
-                      l.strike === state.zeroGamma || 
                       l.strike === state.maxGammaStrike || 
                       l.daily_call_oi > 0 || 
                       l.daily_put_oi > 0 || 
@@ -785,6 +796,10 @@ function renderChart(payload) {
                       l.global_put_oi > 0;
         return isKey;
     }).map(l => l.strike);
+    
+    if (state.zeroGamma) {
+        activeStrikes.push(state.zeroGamma);
+    }
     
     // Compute chart scale bounds to focus on the active price scale (expand X axis zoom)
     let chartMinStrike = sortedData[0].strike;
@@ -795,7 +810,7 @@ function renderChart(payload) {
         let maxActive = Math.max(...activeStrikes);
         
         // If the currency is XAU or NAS, let's limit the range to avoid extremely far global barriers (e.g. 5350 when spot is 4595)
-        if (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH') {
+        if (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH') {
             const spotPrice = payload.metadata.spot;
             const r95_low = payload.metadata.r95_low || (spotPrice * 0.95);
             const r95_high = payload.metadata.r95_high || (spotPrice * 1.05);
@@ -927,7 +942,7 @@ function renderChart(payload) {
                     callbacks: {
                         title: function(context) {
                             // Использовать parsed.x для получения точного числового значения страйка из линейной шкалы
-                            const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH';
+                            const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH';
                             return `Опционный страйк: ${parseFloat(context[0].parsed.x || context[0].label).toFixed(isXAU ? 2 : 4)}`;
                         },
                         label: function(context) {
@@ -962,7 +977,7 @@ function renderChart(payload) {
                             size: 11
                         },
                         callback: function(val) {
-                            return val.toFixed((state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'BTC' || state.currency === 'ETH') ? 2 : 4); // Format x axis strikes
+                            return val.toFixed((state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC' || state.currency === 'ETH') ? 2 : 4); // Format x axis strikes
                         }
                     }
                 },
@@ -1177,7 +1192,7 @@ function bindEvents() {
             localStorage.setItem('gex_dashboard_currency', state.currency); // SAVE State
             
             // Set dynamic default noise filter for the selected currency
-            state.noiseThresholdPercent = state.currency === 'XAU' ? 5.0 : (state.currency === 'NAS' ? 2.0 : (state.currency === 'BTC' || state.currency === 'ETH' ? 2.0 : 1.0));
+            state.noiseThresholdPercent = state.currency === 'XAU' ? 5.0 : (state.currency === 'NAS' || state.currency === 'SPX' ? 2.0 : (state.currency === 'BTC' || state.currency === 'ETH' ? 2.0 : 1.0));
             localStorage.setItem('gex_dashboard_noise_filter', state.noiseThresholdPercent);
             if (elements.noiseFilterSlider) {
                 elements.noiseFilterSlider.value = state.noiseThresholdPercent;

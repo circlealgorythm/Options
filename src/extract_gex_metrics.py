@@ -112,13 +112,9 @@ def extract_metrics(date_str=None):
                         min_dist = dist
                         zero_gamma_strike = candidate
             
-            # If no sign flip found, fallback to minimum absolute GEX strike near spot
-            if zero_gamma_strike == 0.0:
-                near_df = sorted_df.copy()
-                near_df["dist"] = (near_df["Strike"] - spot).abs()
-                near_df = near_df.sort_values("dist").head(10)
-                best_idx = near_df["Total_GEX"].abs().idxmin()
-                zero_gamma_strike = sorted_df.loc[best_idx, "Strike"]
+            # If the exact Gamma_Flip was calculated in the pipeline, use it directly
+            if "Gamma_Flip" in df.columns and df["Gamma_Flip"].iloc[0] > 0:
+                zero_gamma_strike = df["Gamma_Flip"].iloc[0]
 
             print(f"## Asset: {currency} (Active Months: Global={global_month}, Daily={daily_month})")
             print(f"- **Futures Spot:** {spot:.5f}")
