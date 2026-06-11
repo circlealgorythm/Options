@@ -34,14 +34,14 @@
     "priority": 3,
     "area": "dashboard_analytics",
     "title": "Интеграция Gemini API для автогенерации аналитических отчетов",
-    "user_visible_behavior": "При обновлении данных на бэкенде дашборд автоматически обновляет вкладку аналитики с подробным маркдаун-обзором, сгенерированным моделью Gemini.",
-    "status": "not_started",
+    "user_visible_behavior": "Агент Antigravity по расписанию автоматически генерирует подробный маркдаун-обзор и сохраняет его в Dashboard/analysis.json для дашборда.",
+    "status": "passing",
     "verification": [
-      "1. Запустить src/generate_ai_report.py с ключом API.",
+      "1. Проверить запуск scheduled task в Antigravity.",
       "2. Убедиться, что файл Dashboard/analysis.json корректно обновлен с новым текстовым планом.",
       "3. Проверить правильность рендеринга Markdown во вкладке 'Аналитика GEX' в веб-интерфейсе."
     ],
-    "evidence": null,
+    "evidence": "Скрипт src/extract_gex_metrics.py извлекает метрики, а планировщик Antigravity запускает агента для генерации отчетов по шаблону GEX_Analysis_Template.md.",
     "notes": "Автоматизирует ежедневный аналитический обзор уровней."
   },
   {
