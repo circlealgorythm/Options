@@ -264,7 +264,20 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
         return filter_nearest_month(filter_nearest_code(daily, XAU_DAILY_CODE_DOW, as_of_date))
 
     if currency == 'NAS':
-        target_code = NAS_DAILY_BY_WEEKDAY.get(dow)
+        week_num = (as_of_date.day - 1) // 7 + 1
+        if dow == 0:
+            target_code = f'Q{week_num}A'
+        elif dow == 1:
+            target_code = f'Q{week_num}B'
+        elif dow == 2:
+            target_code = f'Q{week_num}C'
+        elif dow == 3:
+            target_code = f'Q{week_num}D'
+        elif dow == 4:
+            target_code = f'QN{week_num}' if week_num <= 4 else 'QN'
+        else:
+            target_code = 'QN1'
+            
         exact = calc_df[calc_df['Option_Type'] == target_code]
         if not exact.empty:
             return filter_nearest_month(exact)
