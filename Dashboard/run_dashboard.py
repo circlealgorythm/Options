@@ -386,6 +386,14 @@ def run(server_class=HTTPServer, handler_class=DashboardHandler, port=PORT):
     server_address = ('', port)
     httpd = server_class(server_address, handler_class)
     print(f"Option Levels Dashboard server running at http://localhost:{port}/")
+    
+    # Trigger an immediate sync check on startup
+    try:
+        print("[Sync] Running initial startup sync check...")
+        sync_today_files_from_github()
+    except Exception as e:
+        print(f"[Sync] Error during startup sync check: {e}")
+        
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
