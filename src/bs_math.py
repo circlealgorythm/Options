@@ -49,18 +49,16 @@ def implied_volatility(price, S, K, T, r, option_type='C'):
 def calculate_gex(gamma, open_interest, contract_size, S):
     """
     Calculates Gamma Exposure (GEX) for a single strike.
-    GEX = Gamma * Open Interest * Contract Size * S
-    Some conventions also divide or adjust by 100 or 1% S.
-    We will use the standard absolute value representation.
+    Normalized by dividing by 100,000 to match standard visual magnitudes.
     """
-    return gamma * open_interest * contract_size
+    return (gamma * open_interest * contract_size * S * 100) / 100_000.0
 
 def calculate_absolute_gamma(gamma, open_interest):
     """
     Calculates Absolute Gamma.
-    Abs Gamma = Gamma * Open Interest
+    Normalized by dividing by 100,000 to match standard visual magnitudes.
     """
-    return gamma * open_interest
+    return (gamma * open_interest) / 100_000.0
 
 def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0):
     """

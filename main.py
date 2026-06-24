@@ -717,11 +717,24 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         price = row['Settle']
         T = month_T_cache.get(m, 0.08)
         
-        if price <= 0.0:
+        # Cap deep ITM/OTM strikes: if strike is >30% from spot, zero GEX
+        # These are noise that blows up the visual scale
+        strike_distance_pct = abs(K - local_spot) / local_spot if local_spot > 0 else 0
+        skip_gex = strike_distance_pct > 0.30
+        
+        if price <= 0.0 or skip_gex:
             iv = 0.001
             gamma = 0.0
             gex = 0.0
             abs_gamma = 0.0
+            if price > 0.0 and not skip_gex:
+                pass  # price <= 0 case
+            elif skip_gex and price > 0.0:
+                # Still compute IV for gamma_flip but zero out display GEX
+                if is_call:
+                    iv = implied_volatility(price, local_spot, K, T, r, 'C')
+                else:
+                    iv = implied_volatility(price, local_spot, K, T, r, 'P')
         elif is_call:
             iv = implied_volatility(price, local_spot, K, T, r, 'C')
             gamma = bs_gamma(local_spot, K, T, r, iv) if iv > 0.001 else 0.0
@@ -821,6 +834,13 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         'GEX': 'sum',
         'Abs_Gamma': 'sum'
     }).reset_index()
+    
+    # Winsorize GEX outliers: cap at P97.5 to prevent single dominant strike
+    # from squashing all other levels in the MT5 noise filter
+    nonzero_gex = summary[summary['GEX'] != 0]['GEX'].abs()
+    if len(nonzero_gex) > 10:
+        cap = nonzero_gex.quantile(0.975)
+        summary['GEX'] = summary['GEX'].clip(lower=-cap, upper=cap)
     
     summary = summary.merge(daily_call, on='Strike', how='left')
     summary = summary.merge(daily_put, on='Strike', how='left')
