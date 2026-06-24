@@ -246,15 +246,28 @@ def filter_nearest_code(df, code_dow_map, as_of_date):
     if not available:
         return df.iloc[0:0]
 
-    valid_available = [code for code in available if is_valid_daily_df(df[df['Option_Type'] == code])]
-    if valid_available:
-        available_to_use = valid_available
-    else:
-        available_to_use = available
+    dow_to_codes = {}
+    for code in available:
+        d = code_dow_map[code]
+        if d not in dow_to_codes:
+            dow_to_codes[d] = []
+        dow_to_codes[d].append(code)
 
-    dow = as_of_date.weekday()
-    code = sorted(available_to_use, key=lambda item: ((code_dow_map[item] - dow) % 5, code_dow_map[item], item))[0]
-    return df[df['Option_Type'] == code]
+    valid_dows = []
+    for d, codes in dow_to_codes.items():
+        combined_df = df[df['Option_Type'].isin(codes)]
+        if is_valid_daily_df(combined_df):
+            valid_dows.append(d)
+
+    current_dow = as_of_date.weekday()
+    
+    if valid_dows:
+        target_dow = sorted(valid_dows, key=lambda d: ((d - current_dow) % 5, d))[0]
+    else:
+        target_dow = sorted(dow_to_codes.keys(), key=lambda d: ((d - current_dow) % 5, d))[0]
+        
+    target_codes = dow_to_codes[target_dow]
+    return df[df['Option_Type'].isin(target_codes)]
 
 
 
@@ -617,14 +630,9 @@ def detect_spot_and_classify(raw_df, currency):
         for idx, row in df[df['Is_Call'].isna()].iterrows():
             m = row['Contract_Month']
             strike = row['Strike']
-            is_cheap = row['Settle'] < min_settle_threshold
+            strike = row['Strike']
             spot_guess = spots_per_month.get(m, global_spot)
-            
-            if strike < spot_guess:
-                is_call = not is_cheap
-            else:
-                is_call = is_cheap
-            df.at[idx, 'Is_Call'] = is_call
+            df.at[idx, 'Is_Call'] = strike >= spot_guess
 
     return global_spot, spots_per_month, df
 
@@ -764,24 +772,40 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         return pd.DataFrame(columns=['Strike', oi_col])
 
     # Determine Global DF
-    max_month = 'UNKNOWN'
     global_codes = {
         'EUR': ['EUU'],
         'GBP': ['GBU'],
         'XAU': ['OG'],
-        'NAS': ['QN'],
+        'NAS': ['QN', 'QN1', 'QN2', 'QN3', 'QN4'],
         'BTC': ['BTC'],
-
         'USDCAD': ['CAU'],
         'SPX': ['MINI', 'EMINI']
     }.get(currency, ['OG'])
+    
     global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
     if not global_df.empty:
-        month_oi = global_df.groupby('Contract_Month')['Call_OI'].sum() + global_df.groupby('Contract_Month')['Put_OI'].sum()
-        max_month = month_oi.idxmax()
-        global_df = global_df[global_df['Contract_Month'] == max_month]
+        call_month_oi = global_df.groupby('Contract_Month')['Call_OI'].sum()
+        put_month_oi = global_df.groupby('Contract_Month')['Put_OI'].sum()
+        
+        # Create a dataframe to find months with BOTH calls and puts
+        monthly_oi = pd.DataFrame({'Call_OI': call_month_oi, 'Put_OI': put_month_oi}).fillna(0)
+        
+        # Filter to months with > 0 for both
+        valid_months = monthly_oi[(monthly_oi['Call_OI'] > 0) & (monthly_oi['Put_OI'] > 0)].copy()
+        
+        if not valid_months.empty:
+            valid_months['Total_OI'] = valid_months['Call_OI'] + valid_months['Put_OI']
+            max_month = valid_months['Total_OI'].idxmax()
+        else:
+            total_month_oi = call_month_oi.add(put_month_oi, fill_value=0)
+            max_month = total_month_oi.idxmax() if not total_month_oi.empty else None
+            
+        global_call_df = global_df[global_df['Contract_Month'] == max_month] if max_month else global_df
+        global_put_df = global_df[global_df['Contract_Month'] == max_month] if max_month else global_df
     else:
-        global_df = calc_df
+        global_call_df = calc_df
+        global_put_df = calc_df
+        max_month = 'UNKNOWN'
         
     # Determine Daily DF
     daily_df = select_daily_contracts(calc_df, currency, as_of_date)
@@ -789,8 +813,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     daily_call = select_near_spot_mdd_settle(daily_df, 'Call', spot).rename(columns={'Call_OI': 'Daily_Call_OI', 'Call_Settle': 'Daily_Call_Settle'})
     daily_put = select_near_spot_mdd_settle(daily_df, 'Put', spot).rename(columns={'Put_OI': 'Daily_Put_OI', 'Put_Settle': 'Daily_Put_Settle'})
     
-    global_call = get_max_oi_level(global_df, 'Call').rename(columns={'Call_OI': 'Global_Call_OI'})
-    global_put = get_max_oi_level(global_df, 'Put').rename(columns={'Put_OI': 'Global_Put_OI'})
+    global_call = get_max_oi_level(global_call_df, 'Call').rename(columns={'Call_OI': 'Global_Call_OI'})
+    global_put = get_max_oi_level(global_put_df, 'Put').rename(columns={'Put_OI': 'Global_Put_OI'})
     
     # Group by Strike and sum values across all expirations/series
     summary = calc_df.groupby('Strike').agg({
