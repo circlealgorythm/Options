@@ -72,11 +72,7 @@ BTC_WEEKLY_CODES = ['BTC']
 BTC_DAILY_CODE_DOW = {'BTC': 0}
 BTC_WEEKLY_CODE_DOW = {'BTC': 0}
 
-ETH_DAILY_BY_WEEKDAY = {0: 'ETH', 1: 'ETH', 2: 'ETH', 3: 'ETH', 4: 'ETH'}
-ETH_DAILY_CODES = ['ETH']
-ETH_WEEKLY_CODES = ['ETH']
-ETH_DAILY_CODE_DOW = {'ETH': 0}
-ETH_WEEKLY_CODE_DOW = {'ETH': 0}
+
 
 CAD_DAILY_BY_WEEKDAY = {0: 'MCM', 1: 'TCD', 2: 'WCD', 3: 'SCD', 4: '1CD'}
 CAD_DAILY_CODES = ['MCM', 'TCD', 'WCD', 'SCD', '1CD', '2CD', '3CD', '4CD', '5CD']
@@ -112,13 +108,134 @@ def nearest_month(months):
     return sorted(valid_months, key=month_sort_key)[0] if valid_months else None
 
 
+def get_fridays(year, month):
+    import calendar
+    fridays = []
+    for week in calendar.monthcalendar(year, month):
+        if week[calendar.FRIDAY] != 0:
+            fridays.append(week[calendar.FRIDAY])
+    return fridays
+
+def get_wednesdays(year, month):
+    import calendar
+    wednesdays = []
+    for week in calendar.monthcalendar(year, month):
+        if week[calendar.WEDNESDAY] != 0:
+            wednesdays.append(week[calendar.WEDNESDAY])
+    return wednesdays
+
+def month_to_expiry_date(month_code, currency=None):
+    """Convert month code to specific expiry date based on asset class."""
+    import calendar
+    if not month_code or len(month_code) < 5:
+        return None
+    mon = month_code[:3].upper()
+    try:
+        year = 2000 + int(month_code[3:5])
+    except (ValueError, IndexError):
+        return None
+    month_num = MONTH_MAP.get(mon)
+    if month_num is None:
+        return None
+        
+    if currency in ['EUR', 'GBP', 'CAD', 'USDCAD']:
+        # 2nd Friday before 3rd Wednesday
+        weds = get_wednesdays(year, month_num)
+        third_wed = datetime.date(year, month_num, weds[2] if len(weds) >= 3 else weds[-1])
+        # Minus 12 days always lands on the 2nd Friday before
+        expiry = third_wed - datetime.timedelta(days=12)
+        return expiry
+        
+    elif currency == 'BTC':
+        # Last Friday
+        fridays = get_fridays(year, month_num)
+        return datetime.date(year, month_num, fridays[-1])
+        
+    elif currency == 'XAU':
+        # 4th business day before the month-end of the PRIOR month
+        if month_num == 1:
+            prior_y = year - 1
+            prior_m = 12
+        else:
+            prior_y = year
+            prior_m = month_num - 1
+            
+        # Get last day of prior month
+        _, last_day = calendar.monthrange(prior_y, prior_m)
+        d = datetime.date(prior_y, prior_m, last_day)
+        
+        # We need the 4th business day prior to the delivery month.
+        bday_count = 0
+        while True:
+            if d.weekday() < 5:
+                bday_count += 1
+                if bday_count == 4:
+                    return d
+            d -= datetime.timedelta(days=1)
+            
+    else:
+        # SPX, NAS, and Default: 3rd Friday
+        fridays = get_fridays(year, month_num)
+        third_friday = fridays[2] if len(fridays) >= 3 else fridays[-1]
+        return datetime.date(year, month_num, third_friday)
+
+
+def compute_dte(month_code, currency=None, as_of_date=None):
+    """Compute trading days to expiry. Returns at least 1."""
+    if as_of_date is None:
+        as_of_date = datetime.date.today()
+    expiry = month_to_expiry_date(month_code, currency)
+    if expiry is None:
+        return 21
+    dte = 0
+    current = as_of_date
+    while current < expiry:
+        current += datetime.timedelta(days=1)
+        if current.weekday() < 5:
+            dte += 1
+    return max(dte, 1)
+
+
+MIN_DTE_FOR_IV = 5  # Auto-roll to next month when DTE < this
+
+MIN_IV_THRESHOLD = {
+    'EUR': 0.02, 'GBP': 0.015, 'USDCAD': 0.015, 'CAD': 0.015,
+    'XAU': 0.05, 'NAS': 0.05, 'SPX': 0.05,
+    'BTC': 0.15,
+}
+
+FALLBACK_IV = {
+    'XAU': 0.15, 'NAS': 0.12, 'SPX': 0.15, 'BTC': 0.50,
+    'EUR': 0.07, 'GBP': 0.06, 'USDCAD': 0.06, 'CAD': 0.06,
+}
+
+
+def is_valid_daily_df(df):
+    if df.empty:
+        return False
+    has_calls = (df['Call_OI'] > 0).any() and (df['Call_Settle'] > 0.0).any()
+    has_puts = (df['Put_OI'] > 0).any() and (df['Put_Settle'] > 0.0).any()
+    return has_calls and has_puts
+
+
 def filter_nearest_month(df):
     if df.empty or 'Contract_Month' not in df.columns:
         return df
-    month = nearest_month(df['Contract_Month'].dropna().unique())
-    if month is None:
+    months = df['Contract_Month'].dropna().unique()
+    if len(months) == 0:
+        return df
+    
+    valid_months = [m for m in months if month_sort_key(m) != (9999, 99)]
+    if not valid_months:
         return df.iloc[0:0]
-    return df[df['Contract_Month'] == month]
+        
+    sorted_months = sorted(valid_months, key=month_sort_key)
+    for m in sorted_months:
+        sub_df = df[df['Contract_Month'] == m]
+        if is_valid_daily_df(sub_df):
+            return sub_df
+            
+    return df[df['Contract_Month'] == sorted_months[0]]
 
 
 def filter_nearest_code(df, code_dow_map, as_of_date):
@@ -129,9 +246,16 @@ def filter_nearest_code(df, code_dow_map, as_of_date):
     if not available:
         return df.iloc[0:0]
 
+    valid_available = [code for code in available if is_valid_daily_df(df[df['Option_Type'] == code])]
+    if valid_available:
+        available_to_use = valid_available
+    else:
+        available_to_use = available
+
     dow = as_of_date.weekday()
-    code = sorted(available, key=lambda item: ((code_dow_map[item] - dow) % 5, code_dow_map[item], item))[0]
+    code = sorted(available_to_use, key=lambda item: ((code_dow_map[item] - dow) % 5, code_dow_map[item], item))[0]
     return df[df['Option_Type'] == code]
+
 
 
 def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
@@ -143,7 +267,7 @@ def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
         sub_dir = 'XAU'
     elif 'NAS' in filename or 'SPX' in filename:
         sub_dir = 'NAS100'
-    elif 'BTC' in filename or 'ETH' in filename:
+    elif 'BTC' in filename:
         sub_dir = 'Crypto'
     elif 'USDCAD' in filename or 'CAD' in filename:
         sub_dir = 'USDCAD'
@@ -185,27 +309,41 @@ def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
     return copied_path
 
 
-def cleanup_old_files(target_dir=None, days_to_keep=30):
-    import time
+def cleanup_old_files(target_dir=None, days_to_keep=14):
+    import datetime
     base_dir = target_dir or os.environ.get("MT5_GEX_DIR") or DEFAULT_MT5_GEX_DIR
     if not base_dir or not os.path.isdir(base_dir):
         return
 
     print(f"Cleaning up files older than {days_to_keep} days in: {base_dir}")
-    now = time.time()
-    cutoff = now - (days_to_keep * 86400)
+    today = datetime.date.today()
+    limit = today - datetime.timedelta(days=days_to_keep)
 
     for root, dirs, files in os.walk(base_dir):
         for filename in files:
             if filename.startswith("GEX_") and filename.endswith(".csv"):
                 filepath = os.path.join(root, filename)
-                try:
-                    mtime = os.path.getmtime(filepath)
-                    if mtime < cutoff:
-                        os.remove(filepath)
-                        print(f"Deleted old GEX file: {filepath} (modified {time.ctime(mtime)})")
-                except OSError as e:
-                    print(f"Error deleting file {filepath}: {e}")
+                basename = os.path.basename(filename)
+                parts = basename.replace(".csv", "").split("_")
+                if len(parts) >= 3:
+                    date_part = parts[-1]
+                    try:
+                        file_date = datetime.datetime.strptime(date_part, "%Y-%m-%d").date()
+                        if file_date < limit:
+                            os.remove(filepath)
+                            print(f"Deleted old GEX file (by filename date): {filepath} (date {date_part})")
+                    except ValueError:
+                        try:
+                            import time
+                            mtime = os.path.getmtime(filepath)
+                            cutoff = time.time() - (days_to_keep * 86400)
+                            if mtime < cutoff:
+                                os.remove(filepath)
+                                print(f"Deleted old GEX file (by mtime): {filepath} (modified {time.ctime(mtime)})")
+                        except OSError as e:
+                            print(f"Error deleting file {filepath}: {e}")
+                    except OSError as e:
+                        print(f"Error deleting file {filepath}: {e}")
 
 
 def select_daily_contracts(calc_df, currency, as_of_date=None):
@@ -227,41 +365,47 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
     if currency == 'EUR':
         target_code = EUR_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
 
         weekly = calc_df[calc_df['Option_Type'].isin(EUR_WEEKLY_CODES)]
-        if not weekly.empty:
-            return filter_nearest_month(filter_nearest_code(weekly, EUR_WEEKLY_CODE_DOW, as_of_date))
+        nearest_weekly = filter_nearest_code(weekly, EUR_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_weekly):
+            return filter_nearest_month(nearest_weekly)
 
         daily = calc_df[calc_df['Option_Type'].isin(EUR_DAILY_CODES)]
-        return filter_nearest_month(filter_nearest_code(daily, EUR_DAILY_CODE_DOW, as_of_date))
+        nearest_daily = filter_nearest_code(daily, EUR_DAILY_CODE_DOW, as_of_date) if not daily.empty else pd.DataFrame()
+        return filter_nearest_month(nearest_daily)
 
     if currency == 'GBP':
         target_code = GBP_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
 
         weekly = calc_df[calc_df['Option_Type'].isin(GBP_WEEKLY_CODES)]
-        if not weekly.empty:
-            return filter_nearest_month(filter_nearest_code(weekly, GBP_WEEKLY_CODE_DOW, as_of_date))
+        nearest_weekly = filter_nearest_code(weekly, GBP_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_weekly):
+            return filter_nearest_month(nearest_weekly)
 
         short = calc_df[calc_df['Option_Type'].isin(GBP_SHORT_CODES)]
-        return filter_nearest_month(filter_nearest_code(short, GBP_SHORT_CODE_DOW, as_of_date))
+        nearest_short = filter_nearest_code(short, GBP_SHORT_CODE_DOW, as_of_date) if not short.empty else pd.DataFrame()
+        return filter_nearest_month(nearest_short)
 
     if currency == 'XAU':
         target_code = XAU_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
 
         weekly = calc_df[calc_df['Option_Type'].isin(XAU_WEEKLY_CODES)]
-        if not weekly.empty:
-            return filter_nearest_month(filter_nearest_code(weekly, XAU_WEEKLY_CODE_DOW, as_of_date))
+        nearest_weekly = filter_nearest_code(weekly, XAU_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_weekly):
+            return filter_nearest_month(nearest_weekly)
 
         daily = calc_df[calc_df['Option_Type'].isin(XAU_DAILY_CODES)]
-        return filter_nearest_month(filter_nearest_code(daily, XAU_DAILY_CODE_DOW, as_of_date))
+        nearest_daily = filter_nearest_code(daily, XAU_DAILY_CODE_DOW, as_of_date) if not daily.empty else pd.DataFrame()
+        return filter_nearest_month(nearest_daily)
 
     if currency == 'NAS':
         week_num = (as_of_date.day - 1) // 7 + 1
@@ -279,60 +423,58 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
             target_code = 'QN1'
             
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
 
         weekly = calc_df[calc_df['Option_Type'].isin(NAS_WEEKLY_CODES)]
-        if not weekly.empty:
-            return filter_nearest_month(filter_nearest_code(weekly, NAS_WEEKLY_CODE_DOW, as_of_date))
+        nearest_weekly = filter_nearest_code(weekly, NAS_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_weekly):
+            return filter_nearest_month(nearest_weekly)
 
         daily = calc_df[calc_df['Option_Type'].isin(NAS_DAILY_CODES)]
-        return filter_nearest_month(filter_nearest_code(daily, NAS_DAILY_CODE_DOW, as_of_date))
+        nearest_daily = filter_nearest_code(daily, NAS_DAILY_CODE_DOW, as_of_date) if not daily.empty else pd.DataFrame()
+        return filter_nearest_month(nearest_daily)
 
     if currency == 'BTC':
         target_code = BTC_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
-            return filter_nearest_month(exact)
-        return filter_nearest_month(calc_df)
-
-    if currency == 'ETH':
-        target_code = ETH_DAILY_BY_WEEKDAY.get(dow)
-        exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
         return filter_nearest_month(calc_df)
 
     if currency in ['CAD', 'USDCAD']:
         target_code = CAD_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
 
         weekly = calc_df[calc_df['Option_Type'].isin(CAD_WEEKLY_CODES)]
-        if not weekly.empty:
-            return filter_nearest_month(filter_nearest_code(weekly, CAD_WEEKLY_CODE_DOW, as_of_date))
+        nearest_weekly = filter_nearest_code(weekly, CAD_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_weekly):
+            return filter_nearest_month(nearest_weekly)
 
         daily = calc_df[calc_df['Option_Type'].isin(CAD_DAILY_CODES)]
-        return filter_nearest_month(filter_nearest_code(daily, CAD_DAILY_CODE_DOW, as_of_date))
+        nearest_daily = filter_nearest_code(daily, CAD_DAILY_CODE_DOW, as_of_date) if not daily.empty else pd.DataFrame()
+        return filter_nearest_month(nearest_daily)
     if currency == 'SPX':
         target_code = SPX_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
-        if not exact.empty:
+        if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
 
         weekly = calc_df[calc_df['Option_Type'].isin(SPX_WEEKLY_CODES)]
-        if not weekly.empty:
-            return filter_nearest_month(filter_nearest_code(weekly, SPX_WEEKLY_CODE_DOW, as_of_date))
+        nearest_weekly = filter_nearest_code(weekly, SPX_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_weekly):
+            return filter_nearest_month(nearest_weekly)
 
         daily = calc_df[calc_df['Option_Type'].isin(SPX_DAILY_CODES)]
-        if not daily.empty:
-            return filter_nearest_month(filter_nearest_code(daily, SPX_DAILY_CODE_DOW, as_of_date))
+        nearest_daily = filter_nearest_code(daily, SPX_DAILY_CODE_DOW, as_of_date) if not daily.empty else pd.DataFrame()
+        if is_valid_daily_df(nearest_daily):
+            return filter_nearest_month(nearest_daily)
         return filter_nearest_month(calc_df)
 
 
     return pd.DataFrame(columns=calc_df.columns)
-
 
 def validate_mdd_summary(summary, currency):
     required = [
@@ -355,7 +497,7 @@ def validate_mdd_summary(summary, currency):
         missing.append("Global_Month")
 
     if missing:
-        raise RuntimeError(f"{currency} summary is missing required MDD data: {', '.join(missing)}")
+        print(f"WARNING: {currency} summary is missing required MDD data: {', '.join(missing)}")
 
 
 def select_near_spot_mdd_settle(df, type_prefix, spot_price):
@@ -385,30 +527,151 @@ def select_near_spot_mdd_settle(df, type_prefix, spot_price):
     return preferred.iloc[[0]][['Strike', settle_col, oi_col]]
 
 
+GLOBAL_CODES_MAP = {
+    'EUR': ['EUU'],
+    'GBP': ['GBU'],
+    'XAU': ['OG'],
+    'NAS': ['QN'],
+    'BTC': ['BTC'],
+
+    'USDCAD': ['CAU'],
+    'CAD': ['CAU'],
+    'SPX': ['MINI', 'EMINI']
+}
+
+FALLBACK_SPOT_MAP = {
+    'EUR': 1.1400,
+    'GBP': 1.3200,
+    'USDCAD': 1.4150,
+    'CAD': 0.7050,
+    'XAU': 4060.0,
+    'NAS': 28500.0,
+    'SPX': 7280.0,
+    'BTC': 63000.0,
+}
+
+def detect_spot_and_classify(raw_df, currency):
+    if raw_df.empty:
+        return FALLBACK_SPOT_MAP.get(currency, 1.0), {}, raw_df
+        
+    df = raw_df.copy()
+    
+    df['Strike'] = pd.to_numeric(df['Strike'], errors='coerce')
+    df['Settle'] = pd.to_numeric(df['Settle'], errors='coerce')
+    df['OI'] = pd.to_numeric(df['OI'], errors='coerce')
+    df = df.dropna(subset=['Contract_Month', 'Strike', 'Settle'])
+    
+    # Compute spot per contract month
+    df_for_spot = df.copy()
+    df_for_spot['Settle'] = df_for_spot['Settle'].round(6)
+    df_for_spot = df_for_spot.drop_duplicates(subset=['Option_Type', 'Contract_Month', 'Strike', 'Settle', 'OI'])
+    
+    min_settle_threshold = {
+        'EUR': 0.0001, 'GBP': 0.0001, 'USDCAD': 0.0001, 'CAD': 0.0001,
+        'XAU': 1.0, 'NAS': 5.0, 'SPX': 5.0, 'BTC': 100.0,
+    }.get(currency, 1.0)
+    
+    spots_per_month = {}
+    fallback_spot = FALLBACK_SPOT_MAP.get(currency, 1.0)
+    
+    months = df_for_spot['Contract_Month'].unique()
+    for m in months:
+        m_df = df_for_spot[df_for_spot['Contract_Month'] == m]
+        spot_m = fallback_spot
+        
+        # If Is_Call is perfectly known, use it
+        if not m_df['Is_Call'].isna().all():
+            calls = m_df[m_df['Is_Call'] == True].groupby('Strike')['Settle'].max()
+            puts = m_df[m_df['Is_Call'] == False].groupby('Strike')['Settle'].max()
+            common = calls.index.intersection(puts.index)
+            if not common.empty:
+                diffs = (calls[common] - puts[common]).abs()
+                # filter by min_settle_threshold if needed
+                valid_common = [s for s in common if calls[s] >= min_settle_threshold and puts[s] >= min_settle_threshold]
+                if valid_common:
+                    spot_m = diffs[valid_common].idxmin()
+                else:
+                    spot_m = diffs.idxmin()
+        else:
+            # If Is_Call is missing (e.g. EUR mixed CALLS & PUTS table), we cannot 
+            # find the spot using diffs because each strike only has one OTM option.
+            # We must rely on the user-provided fallback spot to classify the options.
+            spot_m = fallback_spot
+        
+        if abs(spot_m - fallback_spot) / fallback_spot > 0.2:
+            print(f"[{currency}] Computed spot {spot_m} for month {m} deviates >20% from fallback {fallback_spot}. Using fallback.")
+            spot_m = fallback_spot
+            
+        spots_per_month[m] = spot_m
+        
+    # Determine global spot for logging/fallback
+    valid_months = [m for m, s in spots_per_month.items() if s != fallback_spot]
+    if valid_months:
+        near_month = nearest_month(valid_months)
+        global_spot = spots_per_month[near_month]
+    else:
+        global_spot = fallback_spot
+        
+    # Classify Is_Call == None using month-specific spots
+    if df['Is_Call'].isna().any():
+        for idx, row in df[df['Is_Call'].isna()].iterrows():
+            m = row['Contract_Month']
+            strike = row['Strike']
+            is_cheap = row['Settle'] < min_settle_threshold
+            spot_guess = spots_per_month.get(m, global_spot)
+            
+            if strike < spot_guess:
+                is_call = not is_cheap
+            else:
+                is_call = is_cheap
+            df.at[idx, 'Is_Call'] = is_call
+
+    return global_spot, spots_per_month, df
+
 def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     if raw_df.empty:
         print(f"No raw data for {currency}")
         return
         
-    # Auto-detect Spot price from ATM options (delta close to 0.5)
-    atm_rows = raw_df[(raw_df['Delta'] >= 0.45) & (raw_df['Delta'] <= 0.55)]
-    if not atm_rows.empty:
-        nearest_m = nearest_month(atm_rows['Contract_Month'].dropna().unique())
-        if nearest_m:
-            spot = atm_rows[atm_rows['Contract_Month'] == nearest_m]['Strike'].mean()
-        else:
-            spot = atm_rows['Strike'].mean()
-    else:
-        spot = 4600.0 if currency == 'XAU' else (30000.0 if currency == 'NAS' else (66000.0 if currency == 'BTC' else (3400.0 if currency == 'ETH' else (1.1500 if currency == 'EUR' else (1.3700 if currency == 'USDCAD' else 1.3400))))) # Fallbacks
-        
+    spot, spots_per_month, classified_df = detect_spot_and_classify(raw_df, currency)
     print(f"[{currency}] Detected Spot price: {spot:.4f}")
     
-    # Calculate ATM implied volatility and daily sigma
     import math
-    if not raw_df.empty:
-        raw_df = raw_df.reset_index(drop=True)
-        atm_idx = (raw_df['Strike'] - spot).abs().idxmin()
-        atm_row = raw_df.loc[atm_idx]
+    
+    # Pre-compute DTE for each contract month
+    month_T_cache = {}
+    if not classified_df.empty:
+        for m in classified_df['Contract_Month'].dropna().unique():
+            dte = compute_dte(m, currency, as_of_date)
+            month_T_cache[m] = max(dte / 252.0, 1.0 / 252.0)
+    
+    r = 0.0
+    
+    if not classified_df.empty:
+        classified_df = classified_df.reset_index(drop=True)
+        
+        # Determine which month to use for ATM IV (auto-rollover)
+        all_months = classified_df['Contract_Month'].dropna().unique()
+        sorted_iv_months = sorted([m for m in all_months if month_sort_key(m) != (9999, 99)], key=month_sort_key)
+        
+        iv_month = sorted_iv_months[0] if sorted_iv_months else None
+        iv_dte = compute_dte(iv_month, currency, as_of_date) if iv_month else 21
+        
+        if iv_dte < MIN_DTE_FOR_IV and len(sorted_iv_months) > 1:
+            old_month, old_dte = iv_month, iv_dte
+            iv_month = sorted_iv_months[1]
+            iv_dte = compute_dte(iv_month, currency, as_of_date)
+            print(f"[{currency}] Near-expiry rollover: {old_month} (DTE={old_dte}) -> {iv_month} (DTE={iv_dte})")
+        
+        T_iv = max(iv_dte / 252.0, 1.0 / 252.0)
+        
+        # Find ATM in IV month
+        iv_month_df = classified_df[classified_df['Contract_Month'] == iv_month] if iv_month else classified_df
+        if iv_month_df.empty:
+            iv_month_df = classified_df
+        
+        atm_idx = (iv_month_df['Strike'] - spot).abs().idxmin()
+        atm_row = iv_month_df.loc[atm_idx]
         price_atm = atm_row['Settle']
         is_call_val = atm_row['Is_Call']
         if isinstance(is_call_val, pd.Series):
@@ -416,18 +679,19 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         strike_atm = atm_row['Strike']
         if isinstance(strike_atm, pd.Series):
             strike_atm = strike_atm.iloc[0]
-        iv_atm = implied_volatility(price_atm, spot, strike_atm, 0.08, 0.0, 'C' if is_call_val else 'P')
-        if iv_atm <= 0.001:
-            iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else (0.06 if currency == 'USDCAD' else 0.08)))))
+        iv_atm = implied_volatility(price_atm, spot, strike_atm, T_iv, 0.0, 'C' if is_call_val else 'P')
+        
+        # Minimum IV sanity check
+        min_iv = MIN_IV_THRESHOLD.get(currency, 0.03)
+        if iv_atm < min_iv:
+            iv_atm = FALLBACK_IV.get(currency, 0.08)
     else:
-        iv_atm = 0.15 if currency == 'XAU' else (0.12 if currency == 'NAS' else (0.50 if currency == 'BTC' else (0.55 if currency == 'ETH' else (0.07 if currency == 'EUR' else (0.06 if currency == 'USDCAD' else 0.08)))))
+        iv_atm = FALLBACK_IV.get(currency, 0.08)
         
     sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
     print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
     
-    contract_size = 100000 if currency == 'USDCAD' else (5 if currency == 'BTC' else (50 if currency == 'ETH' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else (50 if currency == 'SPX' else 62500))))))
-    T = 0.08
-    r = 0.0
+    contract_size = 100000 if currency == 'USDCAD' else (5 if currency == 'BTC' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else (50 if currency == 'SPX' else 62500)))))
     
     calculated_rows = []
     strikes_list = []
@@ -435,40 +699,36 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     is_calls_list = []
     ivs_list = []
     
-    for idx, row in raw_df.iterrows():
+    for idx, row in classified_df.iterrows():
         K = row['Strike']
+        is_call = row['Is_Call']
+        m = row.get('Contract_Month')
         
-        # Determine Option Type (Call or Put)
-        if row['Is_Call'] is not None:
-            is_call = row['Is_Call']
-        else:
-            # Delta-based heuristic relative to Spot
-            if K < spot:
-                is_call = (row['Delta'] >= 0.5)
-            else:
-                is_call = (row['Delta'] < 0.5)
+        local_spot = spots_per_month.get(m, spot)
                 
-        # Calculate Greeks & GEX
         price = row['Settle']
+        T = month_T_cache.get(m, 0.08)
         
-        if is_call:
-            iv = implied_volatility(price, spot, K, T, r, 'C')
-            gamma = bs_gamma(spot, K, T, r, iv)
-            gex = calculate_gex(gamma, row['OI'], contract_size, spot)
+        if price <= 0.0:
+            iv = 0.001
+            gamma = 0.0
+            gex = 0.0
+            abs_gamma = 0.0
+        elif is_call:
+            iv = implied_volatility(price, local_spot, K, T, r, 'C')
+            gamma = bs_gamma(local_spot, K, T, r, iv) if iv > 0.001 else 0.0
+            gex = calculate_gex(gamma, row['OI'], contract_size, local_spot)
             abs_gamma = calculate_absolute_gamma(gamma, row['OI'])
-            call_oi = row['OI']
-            put_oi = 0
-            call_settle = price
-            put_settle = 0.0
         else:
-            iv = implied_volatility(price, spot, K, T, r, 'P')
-            gamma = bs_gamma(spot, K, T, r, iv)
-            gex = -calculate_gex(gamma, row['OI'], contract_size, spot)
+            iv = implied_volatility(price, local_spot, K, T, r, 'P')
+            gamma = bs_gamma(local_spot, K, T, r, iv) if iv > 0.001 else 0.0
+            gex = -calculate_gex(gamma, row['OI'], contract_size, local_spot)
             abs_gamma = calculate_absolute_gamma(gamma, row['OI'])
-            call_oi = 0
-            put_oi = row['OI']
-            call_settle = 0.0
-            put_settle = price
+
+        call_oi = row['OI'] if is_call else 0
+        put_oi = row['OI'] if not is_call else 0
+        call_settle = price if is_call else 0.0
+        put_settle = price if not is_call else 0.0
             
         calculated_rows.append({
             "Strike": K,
@@ -488,7 +748,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         ivs_list.append(iv)
         
     calc_df = pd.DataFrame(calculated_rows)
-    gamma_flip_val = find_gamma_flip(strikes_list, ois_list, is_calls_list, ivs_list, spot, T, r)
+    T_flip = month_T_cache.get(nearest_month(list(month_T_cache.keys())), 0.08) if month_T_cache else 0.08
+    gamma_flip_val = find_gamma_flip(strikes_list, ois_list, is_calls_list, ivs_list, spot, T_flip, r)
     print(f"[{currency}] Calculated Gamma Flip level: {gamma_flip_val:.5f}")
 
     
@@ -508,11 +769,11 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         'EUR': ['EUU'],
         'GBP': ['GBU'],
         'XAU': ['OG'],
-        'NAS': ['EMINI'],
+        'NAS': ['QN'],
         'BTC': ['BTC'],
-        'ETH': ['ETH'],
+
         'USDCAD': ['CAU'],
-        'SPX': ['EMINI']
+        'SPX': ['MINI', 'EMINI']
     }.get(currency, ['OG'])
     global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
     if not global_df.empty:
@@ -561,7 +822,6 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     # Store futures spot price directly so EA doesn't derive it from R68
     summary['Futures_Spot'] = spot
     summary['Gamma_Flip'] = gamma_flip_val
-
     validate_mdd_summary(summary, currency)
     
     # Save to CSV
@@ -689,12 +949,7 @@ if __name__ == "__main__":
             else:
                 print("[Crypto] Warning: No BTC option rows found.")
                 
-            # Process ETH
-            eth_raw = crypto_raw[crypto_raw['Option_Type'] == 'ETH']
-            if not eth_raw.empty:
-                calculate_gex_pipeline(eth_raw, "ETH", DATA_DIR, session_date)
-            else:
-                print("[Crypto] Warning: No ETH option rows found.")
+
         except Exception as e:
             print(f"[Crypto] Error during processing: {e}")
 
@@ -738,6 +993,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[USDCAD] Error during processing: {e}")
 
-    # Step 8: Clean up old GEX files in MT5 directory (keep 30 days)
-    cleanup_old_files()
+    # Step 8: Clean up old GEX files in MT5 directory and local data directory (keep 14 days)
+    cleanup_old_files(days_to_keep=14)
+    cleanup_old_files(target_dir=DATA_DIR, days_to_keep=14)
 

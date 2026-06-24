@@ -53,11 +53,11 @@
             <div class="sidebar-section">
                 <h3><i class="fa-solid fa-money-bill-transfer"></i> Валютная пара</h3>
                 <div class="currency-tabs">
-                    <button class="currency-tab active" data-currency="GBP">
-                        GBPUSD
-                    </button>
-                    <button class="currency-tab" data-currency="EUR">
+                    <button class="currency-tab active" data-currency="EUR">
                         EURUSD
+                    </button>
+                    <button class="currency-tab" data-currency="GBP">
+                        GBPUSD
                     </button>
                     <button class="currency-tab" data-currency="USDCAD">
                         USDCAD
@@ -73,9 +73,6 @@
                     </button>
                     <button class="currency-tab" data-currency="BTC">
                         BTCUSD
-                    </button>
-                    <button class="currency-tab" data-currency="ETH">
-                        ETHUSD
                     </button>
                 </div>
             </div>
@@ -101,7 +98,7 @@
                     <label class="toggle-control">
                         <input type="checkbox" id="toggle-gamma" checked>
                         <span class="control-indicator"></span>
-                        <span class="control-label">Показывать Abs Gamma (Линия)</span>
+                        <span class="control-label">Показывать волны гаммы</span>
                     </label>
                     <label class="toggle-control">
                         <input type="checkbox" id="toggle-spot" checked>
@@ -117,6 +114,11 @@
                         <input type="checkbox" id="toggle-zerogamma" checked>
                         <span class="control-indicator"></span>
                         <span class="control-label">Показывать Zero Gamma</span>
+                    </label>
+                    <label class="toggle-control">
+                        <input type="checkbox" id="toggle-adapt-spot">
+                        <span class="control-indicator"></span>
+                        <span class="control-label" style="color: var(--accent-gold); font-weight: 600;">Адаптировать под спот</span>
                     </label>
                     <div class="slider-control" style="margin-top: 10px; border-top: 1px solid var(--border-glass); padding-top: 15px;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
@@ -255,9 +257,10 @@
                 <div class="chart-header">
                     <h2><i class="fa-solid fa-chart-line"></i> Распределение Net GEX и абсолютной гаммы</h2>
                     <div class="chart-legend">
-                        <span class="legend-item"><span class="legend-color bg-green"></span> Net GEX Call (+)</span>
+                        <span class="legend-item"><span class="legend-color bg-cyan"></span> Net GEX Call (+)</span>
                         <span class="legend-item"><span class="legend-color bg-red"></span> Net GEX Put (-)</span>
-                        <span class="legend-item"><span class="legend-color border-gold bg-trans-gold"></span> Абсолютная гамма</span>
+                        <span class="legend-item"><span class="legend-color border-blue bg-trans-blue"></span> Волна Calls</span>
+                        <span class="legend-item"><span class="legend-color border-orange bg-trans-orange"></span> Волна Puts</span>
                     </div>
                 </div>
                 <div class="chart-wrapper">

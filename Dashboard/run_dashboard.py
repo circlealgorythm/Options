@@ -9,6 +9,7 @@ import urllib.error
 import subprocess
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+import ssl
 
 PORT = 8080
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -17,6 +18,51 @@ DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\
 
 LAST_SYNC_ATTEMPT = 0.0
 SYNC_THROTTLE_SECONDS = 900  # 15 minutes throttle
+
+# Live Spot Price Cache (TTL = 60s)
+LIVE_SPOT_CACHE = {}
+CACHE_TTL = 60.0
+
+YAHOO_TICKERS = {
+    "EUR": "EURUSD=X",
+    "GBP": "GBPUSD=X",
+    "XAU": "GC=F",
+    "NAS": "^NDX",
+    "SPX": "^SPX",
+    "BTC": "BTC-USD",
+
+    "USDCAD": "USDCAD=X"
+}
+
+def get_live_spot_price(currency):
+    ticker = YAHOO_TICKERS.get(currency.upper())
+    if not ticker:
+        return None
+        
+    now = time.time()
+    cached = LIVE_SPOT_CACHE.get(currency)
+    if cached and (now - cached["timestamp"] < CACHE_TTL):
+        return cached["price"]
+        
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    req = urllib.request.Request(
+        url,
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    )
+    context = ssl._create_unverified_context()
+    try:
+        with urllib.request.urlopen(req, context=context, timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            meta = data['chart']['result'][0]['meta']
+            price = meta.get('regularMarketPrice')
+            if price is not None:
+                LIVE_SPOT_CACHE[currency] = {"price": price, "timestamp": now}
+                return price
+    except Exception as e:
+        print(f"[LiveSpot] Error fetching live spot for {currency} ({ticker}): {e}")
+        if cached:
+            return cached["price"]
+    return None
 
 def sync_today_files_from_github():
     global LAST_SYNC_ATTEMPT
@@ -29,7 +75,7 @@ def sync_today_files_from_github():
     LAST_SYNC_ATTEMPT = now
     
     today_str = datetime.date.today().strftime("%Y-%m-%d")
-    currencies = ["EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "ETH", "USDCAD"]
+    currencies = ["EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "USDCAD"]
     
     missing_files = []
     for currency in currencies:
@@ -158,13 +204,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             files = glob.glob(search_pattern)
             
             dates = set()
+            today = datetime.date.today()
+            limit = today - datetime.timedelta(days=14)
+            
             for file_path in files:
                 # Filename format: GEX_CURRENCY_YYYY-MM-DD.csv
                 basename = os.path.basename(file_path)
                 parts = basename.replace(".csv", "").split("_")
                 if len(parts) >= 3:
                     # YYYY-MM-DD is the last part
-                    dates.add(parts[-1])
+                    date_part = parts[-1]
+                    try:
+                        file_date = datetime.datetime.strptime(date_part, "%Y-%m-%d").date()
+                        if file_date >= limit:
+                            dates.add(date_part)
+                    except ValueError:
+                        continue
             
             # Sort dates descending (latest first)
             sorted_dates = sorted(list(dates), reverse=True)
@@ -184,8 +239,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         try:
             params = parse_qs(query_str)
-            currency = params.get('currency', ['GBP'])[0].upper()
+            currency = params.get('currency', ['EUR'])[0].upper()
             selected_date = params.get('date', [None])[0]
+
+            today = datetime.date.today()
+            limit = today - datetime.timedelta(days=14)
+
+            if selected_date:
+                try:
+                    req_date = datetime.datetime.strptime(selected_date, "%Y-%m-%d").date()
+                    if req_date < limit:
+                        self.send_error_json(400, f"Requested date {selected_date} is older than 14 days limit")
+                        return
+                except ValueError:
+                    self.send_error_json(400, f"Invalid date format: {selected_date}")
+                    return
 
             # If no date, find the latest available date for this currency
             if not selected_date:
@@ -197,14 +265,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if not files:
                     self.send_error_json(404, f"No files found for currency {currency}")
                     return
-                # Extract dates and find the latest
+                # Extract dates and find the latest within 14 days limit
                 file_dates = []
                 for f in files:
                     parts = os.path.basename(f).replace(".csv", "").split("_")
                     if len(parts) >= 3:
-                        file_dates.append(parts[-1])
+                        date_part = parts[-1]
+                        try:
+                            file_date = datetime.datetime.strptime(date_part, "%Y-%m-%d").date()
+                            if file_date >= limit:
+                                file_dates.append(date_part)
+                        except ValueError:
+                            continue
                 if not file_dates:
-                    self.send_error_json(404, f"Could not extract dates for currency {currency}")
+                    self.send_error_json(404, f"No GEX data found within the last 14 days for {currency}")
                     return
                 selected_date = sorted(file_dates, reverse=True)[0]
 
@@ -301,6 +375,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "global_call_oi": float(parts[glob_call_oi_idx]),
                         "global_put_oi": float(parts[glob_put_oi_idx]),
                     })
+
+            # Fetch live spot price
+            live_spot = get_live_spot_price(currency)
+            if live_spot is not None:
+                metadata["live_spot"] = live_spot
+                metadata["live_offset"] = live_spot - metadata["spot"]
+            else:
+                metadata["live_spot"] = metadata["spot"]
+                metadata["live_offset"] = 0.0
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
