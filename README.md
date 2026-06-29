@@ -1,147 +1,143 @@
-# 📊 CME Options Gamma Exposure (GEX) Parser & Analytics Pipeline (`Options`)
+# 📊 Quantitative Option Analytics & AI-Driven Risk Hedging Engine (`Options`)
 
 [![Python Version](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/platform-MT5_%7C_Web-orange.svg)](https://www.metatrader5.com/)
+[![Analytical-Framework](https://img.shields.io/badge/Model-Black--Scholes--Merton-red.svg)](https://en.wikipedia.org/wiki/Black%E2%80%93Scholes_model)
+[![AI-Orchestration](https://img.shields.io/badge/AI--Agent-Hedging--Advisor-purple.svg)](https://deepmind.google/technologies/gemini/)
 
-A professional quantitative analytical pipeline designed to harvest daily CME (Chicago Mercantile Exchange) option bulletin data, calculate contract-by-contract Implied Volatility and Gamma Exposure (GEX) via the **Black-Scholes-Merton model**, and output trading levels for integration with **MetaTrader 5 (MQL5)** indicators and a custom web dashboard.
+An enterprise-grade quantitative options analytics platform designed to parse high-frequency exchange bulletins (CME Group), calculate real-time contract-level Greek exposures via the **Black-Scholes-Merton (BSM)** formulation, and orchestrate an **AI-driven options strategy advisor** for automated risk hedging.
 
-Supported assets: **EURUSD**, **GBPUSD**, **USDCAD**, **Gold (XAUUSD)**, **Nasdaq-100 (NDX)**, **S&P 500 (SPX)**, and **Bitcoin (BTCUSD)** options.
-
----
-
-## 🏗️ System Architecture & Data Flow
-
-The system acts as a bridges between CME exchange bulletins, quantitative calculation engines, and client terminals.
-
-```mermaid
-flowchart TD
-    subgraph Exchange ["CME Group Exchange"]
-        A[CME Daily Bulletins PDF Files]
-    end
-
-    subgraph Pipeline ["Python Processing Core"]
-        B[Bulletins Downloader main.py] -->|Local PDFs| C[PDF Plumber Parser parser.py]
-        C -->|Raw Strike, Type, Volume, OI Data| D[BS-M Engine bs_math.py]
-        E[Yahoo Finance API Client] -->|Spot Price & Risk-Free Rates| D
-        D -->|Calculates IV & GEX Per Option| F[Metrics Exporter extract_gex_metrics.py]
-    end
-
-    subgraph Client ["Client Presentation & Indicators"]
-        F -->|Daily Levels CSV| G[MetaTrader 5 GEX Indicator]
-        F -->|Historical CSVs| H[Python Web Server run_dashboard.py]
-        H -->|JSON REST API| I[Interactive Web Dashboard]
-    end
-
-    A -->|Daily Automation / Actions| B
-```
+The engine parses raw options data for **EURUSD**, **GBPUSD**, **USDCAD**, **Gold (XAUUSD)**, **Nasdaq-100 (NDX)**, and **S&P 500 (SPX)**, exporting real-time Gamma profiles to **MetaTrader 5 (MQL5)** visual indicators and interactive web-based dashboards.
 
 ---
 
-## 🔬 Mathematical Framework & Calculations
+## 🔬 Mathematical Core & Options Greeks Model
 
-The pipeline calculates the systemic market impact of market maker hedging requirements at specific options strikes.
+The core computational engine (`src/bs_math.py`) models market liquidity under the assumption of market maker delta-neutral hedging behavior.
 
-### 1. Black-Scholes-Merton Options Gamma
-The option Gamma ($\Gamma$) represents the rate of change in Delta ($\Delta$) with respect to the underlying spot price ($S$):
+### 1. The Black-Scholes-Merton Options Pricing Model
+For underlying assets paying a continuous dividend yield $q$ (or foreign interest rate in currency options), the theoretical pricing of European calls ($C$) and puts ($P$) is defined as:
+
+$$C(S, t) = S e^{-q t} N(d_1) - K e^{-r t} N(d_2)$$
+
+$$P(S, t) = K e^{-r t} N(-d_2) - S e^{-q t} N(-d_1)$$
+
+Where:
+* $d_1 = \frac{\ln(S/K) + \left(r - q + \frac{\sigma^2}{2}\right)t}{\sigma \sqrt{t}}$
+* $d_2 = d_1 - \sigma \sqrt{t}$
+* $S$ is the spot price of the underlying asset.
+* $K$ is the option strike price.
+* $t$ is the annualized time to maturity.
+* $r$ is the risk-free rate of return.
+* $q$ is the dividend yield (or foreign interest rate).
+* $\sigma$ is the implied volatility of the option.
+* $N(\cdot)$ is the cumulative standard normal distribution function.
+
+### 2. Numerical Implied Volatility (IV) Solver
+Since implied volatility cannot be expressed analytically, the engine employs a high-performance **Newton-Raphson iterative solver**. The solver minimizes the difference between the theoretical BSM price and the observed market premium $U_{mkt}$:
+
+$$\sigma_{n+1} = \sigma_n - \frac{\text{BS}(\sigma_n) - U_{mkt}}{\text{Vega}(\sigma_n)}$$
+
+Iterative updates run until $|\text{BS}(\sigma_n) - U_{mkt}| < \epsilon$ (where $\epsilon = 10^{-5}$). 
+The derivative of option price with respect to volatility, **Vega**, is calculated as:
+
+$$\text{Vega} = S e^{-q t} \sqrt{t} N'(d_1)$$
+
+Where $N'(x) = \frac{1}{\sqrt{2\pi}} e^{-x^2/2}$ is the standard normal probability density function.
+
+### 3. Net Gamma Exposure (GEX) Calculation
+Option Gamma ($\Gamma$) measures the rate of change of Delta ($\Delta$) with respect to the spot price:
 
 $$\Gamma = \frac{e^{-q t} N'(d_1)}{S \sigma \sqrt{t}}$$
 
-Where:
-* $d_1 = \frac{\ln(S/K) + (r - q + \sigma^2/2)t}{\sigma \sqrt{t}}$
-* $N'(x) = \frac{1}{\sqrt{2\pi}} e^{-x^2/2}$ is the standard normal probability density function.
-* $K$ is the option strike price.
-* $r$ is the risk-free interest rate (T-Bill yields).
-* $q$ is the dividend yield (or foreign risk-free rate for currency options).
-* $t$ is the annualized time to expiration.
-* $\sigma$ is the option's Implied Volatility (IV).
+The aggregate systemic risk generated by market maker delta-hedging at each option strike price is defined by **Gamma Exposure (GEX)**:
 
-### 2. Implied Volatility (IV) Solver
-Since IV cannot be solved analytically, the engine implements a numerical solver using the **Newton-Raphson method** to find $\sigma$ such that the theoretical option price matches the market premium ($C_{mkt}$ or $P_{mkt}$):
-
-$$\sigma_{n+1} = \sigma_n - \frac{f(\sigma_n)}{\text{Vega}(\sigma_n)}$$
-
-Where $f(\sigma) = \text{BS}(\sigma) - \text{Premium}_{mkt}$ and $\text{Vega}(\sigma) = S e^{-q t} \sqrt{t} N'(d_1)$.
-
-### 3. Net Gamma Exposure (GEX) Calculation
-Market makers adjust their spot exposure to remain delta-neutral. The total dollar value of Gamma exposure at each strike is accumulated:
-
-$$\text{Net GEX} = \text{Open Interest} \times \Gamma \times S^2 \times \text{Multiplier} \times \text{Sign}$$
+$$\text{GEX}_{\text{strike}} = \text{Open Interest} \times \Gamma \times S^2 \times \text{Multiplier} \times \text{Sign}$$
 
 Where:
-* **Multiplier**: Contract sizing unit (e.g., 100 for SPX, 125,000 for EUR option).
-* **Sign**: $+1$ for Call options (assumed market maker long), $-1$ for Put options (assumed market maker short).
-* **Gamma Flip**: The price level where cumulative net GEX changes polarity (shifts from positive "volatility-dampening" to negative "volatility-amplifying" environment).
+* **Multiplier**: Contract sizing unit (e.g., 100 for equity options, 125,000 for EUR currency options).
+* **Sign**: $+1$ for Call options (assumes dealers are net long volatility), $-1$ for Put options (assumes dealers are net short volatility).
+* **Gamma Flip Zone**: The price point where cumulative net GEX transitions from positive to negative. Below this threshold, dealer hedging amplifies market volatility (short-gamma feedback loop).
 
 ---
 
-## 📂 Project Structure
+## 🤖 AI-Agent Options Strategy Orchestration
 
-```text
-.
-├── src/
-│   ├── parser.py              # CME PDF option bulletins parser using coordinates & regex
-│   ├── bs_math.py             # Math module: BSM price, Vega, Newton-Raphson IV solver, and GEX
-│   └── extract_gex_metrics.py # Aggregates option chains, calculates cumulative GEX levels
-├── Dashboard/                 # Local Web Dashboard
-│   ├── run_dashboard.py       # Python http.server wrapper serving JSON APIs
-│   ├── app.js                 # Chart.js frontend visualization script
-│   ├── style.css              # Custom dashboard dark theme styles
-│   └── index.html             # Dashboard frontend frame
-├── CME_GEX_Levels_Indicator.mq5 # Custom MetaTrader 5 indicator for real-time charts
-├── main.py                    # Main pipeline entry point
-├── .env.example               # Environmental configuration templates
-├── requirements.txt           # Python library dependencies
-└── README.md                  # Documentation and setup guide
+To automate portfolio risk management, the system integrates a conceptual **AI Options Hedging Advisor (Agent)**. The agent dynamically parses structural market metrics to recommend and deploy optimal multi-leg options strategies.
+
+```mermaid
+flowchart TD
+    subgraph Market ["Market Inputs"]
+        A[GEX Profile / Gamma Flip Location]
+        B[Implied Volatility Term Structure / Skew]
+        C[Macro News Sentiment - LLM Scored]
+    end
+
+    subgraph Agent ["AI Options Hedging Agent"]
+        D[Context Synthesis Engine]
+        E[Regime Classification Model]
+        F[Strategy Recommendation Matrix]
+        
+        A & B & C --> D
+        D --> E
+        E -->|Positive GEX / Low Vol| G[Inward Vol-Selling Regime]
+        E -->|Negative GEX / High Vol| H[Outward Risk-Hedging Regime]
+    end
+
+    subgraph Execution ["Target Strategies"]
+        G -->|Short Volatility| I[Iron Condor / Covered Call]
+        H -->|Long Volatility & Hedging| J[Protective Collar / Bear Put Spread / Straddle]
+    end
+
+    G & H --> F
+    F -->|Struct Leg Orders JSON| K[Exchange Execution API]
 ```
 
+### Dynamic Strategy Selection Matrix
+
+Depending on the calculated GEX regime and volatility structures, the AI-Agent chooses the mathematical hedging approach:
+
+| Market Regime | Volatility State (IV vs. RV) | Sentiment Polarity | AI Recommended Options Strategy | Hedging Mechanism |
+| :--- | :--- | :--- | :--- | :--- |
+| **Positive GEX** (Above Flip) | Low Volatility (IV Crush) | Neutral / Bullish | **Covered Call / Iron Condor** | Collects premium decay (Theta) in a range-bound market; buffer against small drops. |
+| **Negative GEX** (Below Flip) | High Volatility (IV Spike) | Bearish / High FUD | **Protective Collar (Long Put + Short Call)** | Capped downside risk via the Put leg, funded by selling upside calls. |
+| **GEX Compression** (Near Flip) | IV Smile Steepening | Bullish Breakout | **Long Straddle / Bull Call Spread** | Capitalizes on imminent directional breakouts before the Gamma Flip triggers high volatility. |
+| **Vol Squeeze** (Low GEX) | IV underpriced vs. Historical | High Momentum | **Bullish Risk Reversal** | Long Call combined with Short Put to simulate long stock with defined leverage. |
+
 ---
 
-## 🚀 Installation & Local Run
+## 🏗️ System Architecture & Data Pipeline
 
-### 1. Setup Python Environment
-Clone this repository and install the dependencies locally:
+The data pipeline runs through independent modules, keeping quantitative mathematics separated from network input/output:
 
+1. **Bulletin Harvesting Layer (`main.py`)**: Connects to the CME Daily Bulletin servers via asynchronous clients to pull raw PDF data.
+2. **Options Parsing Engine (`src/parser.py`)**: Utilizes `pdfplumber` to perform coordinate-based boundary scans on PDF tables, translating raw text into structured option chain tables.
+3. **BSM Mathematical Core (`src/bs_math.py`)**: Resolves implied volatilities, computes individual Greek exposures, and generates net GEX curves.
+4. **Levels Transmission (`src/extract_gex_metrics.py`)**: Exports daily pivot levels (Major Support, Major Resistance, Gamma Flip) directly to MetaTrader 5 indicator data directories.
+5. **Dashboard Layer (`Dashboard/run_dashboard.py`)**: Serves an interactive visualization platform charting daily GEX profiles via Chart.js.
+
+---
+
+## 🚀 Quick Start & Integration
+
+### 1. Python Local Pipeline Run
+Install all required libraries for the math and parsing engine:
 ```bash
 pip install -r requirements.txt
 ```
-
-### 2. Generate Daily Levels
-Run the main script to download today's bulletins, parse options tables, and run GEX calculations:
-
+To run the parser and recalculate daily exposures:
 ```bash
 python main.py
 ```
-Generated outputs will be saved as CSV files inside the `data/` folder.
 
-### 3. Run the Web Dashboard
-Launch the lightweight embedded server to view options distribution profiles:
-
+### 2. Launch Local GEX Dashboard
+Start the local HTTP server to view interactive Gamma curves:
 ```bash
 python Dashboard/run_dashboard.py
 ```
-Open `http://localhost:8080` in your web browser.
+Navigate to `http://localhost:8080` in your web browser.
 
----
-
-## 📈 MetaTrader 5 (MT5) Integration
-
-The MT5 indicator loads the calculated levels directly from the data output directories to visualize high-liquidity market-maker walls on your chart.
-
-### Step 1. Enable GitHub WebRequests in MT5
-1. In MT5, navigate to **Tools** -> **Options** (`Ctrl + O`).
-2. Go to the **Expert Advisors** tab.
-3. Check the **"Allow WebRequest for listed URL:"** checkbox.
-4. Add these addresses to the list:
-   * `https://raw.githubusercontent.com`
-   * `https://api.github.com`
-5. Click **OK**.
-
-### Step 2. Compile and Attach the Indicator
-1. Copy `CME_GEX_Levels_Indicator.mq5` into your MT5 terminal data folder: `/MQL5/Indicators/`.
-2. Open **MetaEditor** (`F4`), open the indicator file, and click **Compile** (`F7`).
-3. Attach `CME_GEX_Levels_Indicator` to your **EURUSD**, **GBPUSD**, or stock index chart.
-4. In the Inputs tab, configure:
-   * **GitHub Username**: `circlealgorythm`
-   * **GitHub Repository**: `Options`
-   * **GitHub Token**: Your personal access token (PAT) for private repo security.
+### 3. MetaTrader 5 Integration
+1. Move `CME_GEX_Levels_Indicator.mq5` to your MT5 directory `/MQL5/Indicators/`.
+2. Compile the indicator in MetaEditor (`F4`).
+3. Drag the indicator to your chart, allow WebRequests to `https://raw.githubusercontent.com`, and enter your GitHub PAT token.
