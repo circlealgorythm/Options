@@ -1,7 +1,29 @@
+# System and python caches
 __pycache__/
-*.pyc
-data/*.pdf
-data_test.pdf
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local Environment settings
 .env
+.env.local
+
+# IDEs
 .idea/
 .vscode/
+*.suo
+
+# Project specific data files
+data/*.pdf
+data/*.csv
+data_test.pdf
+
+# Diagnostic compile files & logs
+*.log
+compile_test.log
+
+# Temporary development folder
+# Note: previously tracked files in scratch/ will remain tracked by Git.
+# Any new temp files created in scratch/ will be ignored automatically.
+scratch/
+temp_log.txt
