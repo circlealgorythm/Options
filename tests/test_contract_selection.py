@@ -1,9 +1,10 @@
 import datetime
+import os
 
 import pandas as pd
 
-from main import copy_csv_to_mt5, select_daily_contracts, select_near_spot_mdd_settle, validate_mdd_summary
-from src.parser import parse_bulletin_date_from_text
+from main import copy_csv_to_mt5, convert_cad_options_to_usdcad, detect_spot_and_classify, estimate_atm_iv, resolve_session_date, select_daily_contracts, select_iv_month, select_near_spot_mdd_settle, validate_mdd_summary
+from src.parser import month_code_from_yyyymm00, parse_bulletin_date_from_text
 
 
 def make_rows(rows):
@@ -21,6 +22,21 @@ def make_rows(rows):
             "Put_Settle",
         ],
     )
+
+
+def test_resolve_session_date_uses_publish_date_only_after_current_bulletin(tmp_path):
+    pdf_path = tmp_path / "bulletin.pdf"
+    pdf_path.write_bytes(b"%PDF")
+    today = datetime.date(2026, 6, 25)
+    bulletin_date = datetime.date(2026, 6, 24)
+
+    old_ts = datetime.datetime(2026, 6, 24, 7, 0).timestamp()
+    os.utime(pdf_path, (old_ts, old_ts))
+    assert resolve_session_date(pdf_path, bulletin_date, today) == bulletin_date
+
+    current_ts = datetime.datetime(2026, 6, 25, 7, 29).timestamp()
+    os.utime(pdf_path, (current_ts, current_ts))
+    assert resolve_session_date(pdf_path, bulletin_date, today) == today
 
 
 def test_eur_friday_falls_back_to_weekly_before_other_daily_codes():
@@ -94,6 +110,11 @@ def test_copy_csv_to_mt5_uses_configured_directory(tmp_path):
     assert (target_dir / source.name).read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
 
 
+def test_numeric_mid_header_month_code_parses_to_cme_month():
+    assert month_code_from_yyyymm00("20260600") == "JUN26"
+    assert month_code_from_yyyymm00("20260700") == "JUL26"
+
+
 def test_validate_mdd_summary_rejects_missing_daily_levels():
     summary = pd.DataFrame(
         [
@@ -152,3 +173,150 @@ def test_daily_mdd_selects_nearest_put_below_spot_instead_of_max_oi():
 
     assert selected.iloc[0]["Strike"] == 1.3400
     assert selected.iloc[0]["Put_Settle"] == 0.0051
+
+
+def test_nas_daily_mdd_keeps_call_and_put_in_same_near_month():
+    calc_df = make_rows(
+        [
+            ("QWW", "JUN26", 29700.0, 100, 0, 72, 0, 211.0, 0.0),
+            ("QN4", "JUN26", 29650.0, 0, 100, 0, 16, 0.0, 401.5),
+            ("QN2", "JUL26", 29650.0, 0, 100, 0, 10, 0.0, 759.75),
+        ]
+    )
+
+    selected = select_daily_contracts(calc_df, "NAS", datetime.date(2026, 6, 24))
+
+    assert set(selected["Contract_Month"]) == {"JUN26"}
+    assert (selected["Call_OI"] > 0).any()
+    assert (selected["Put_OI"] > 0).any()
+
+
+def test_nas_daily_mdd_prefers_same_mid_code_put_when_parser_has_it():
+    calc_df = make_rows(
+        [
+            ("QWW", "JUN26", 29670.0, 100, 0, 10, 0, 226.25, 0.0),
+            ("QWW", "JUN26", 29670.0, 0, 100, 0, 1, 0.0, 230.25),
+            ("QN4", "JUN26", 29670.0, 0, 100, 0, 1, 0.0, 410.25),
+        ]
+    )
+
+    selected = select_daily_contracts(calc_df, "NAS", datetime.date(2026, 6, 24))
+
+    assert set(selected["Option_Type"]) == {"QWW"}
+    assert (selected["Put_OI"] > 0).any()
+
+
+def test_spx_daily_mdd_uses_real_wednesday_code_not_quarterly_emini():
+    calc_df = make_rows(
+        [
+            ("XWS", "JUN26", 7440.0, 0, 0, 8, 31, 28.5, 31.0),
+            ("EMINI", "SEP26", 7450.0, 0, 0, 4231, 1800, 223.25, 235.5),
+        ]
+    )
+
+    selected = select_daily_contracts(calc_df, "SPX", datetime.date(2026, 6, 24))
+
+    assert set(selected["Option_Type"]) == {"XWS"}
+    assert set(selected["Contract_Month"]) == {"JUN26"}
+
+
+def test_usdcad_conversion_preserves_exact_breakeven_premium():
+    cad_raw = pd.DataFrame(
+        [
+            {"Strike": 0.7050, "Settle": 0.0010, "Is_Call": True},
+            {"Strike": 0.7050, "Settle": 0.0010, "Is_Call": False},
+        ]
+    )
+
+    converted = convert_cad_options_to_usdcad(cad_raw, 0.7050)
+
+    put_from_call = converted.iloc[0]
+    call_from_put = converted.iloc[1]
+    assert put_from_call["Is_Call"] == False
+    assert call_from_put["Is_Call"] == True
+    assert abs((put_from_call["Strike"] - put_from_call["Settle"]) - (1.0 / 0.7060)) < 1e-12
+    assert abs((call_from_put["Strike"] + call_from_put["Settle"]) - (1.0 / 0.7040)) < 1e-12
+
+
+def test_gbp_fallback_when_exact_code_has_no_calls():
+    # SBP has puts only, no calls
+    # MGM has both calls and puts
+    calc_df = make_rows(
+        [
+            ("MGM", "JUN26", 1.3400, 0, 0, 3120, 9743, 0.0117, 0.0195),
+            ("SBP", "JUN26", 1.3420, 0, 0, 0, 30, 0.0, 0.0013),
+        ]
+    )
+
+    # Date is May 28, 2026 (Thursday -> dow = 3 -> SBP)
+    selected = select_daily_contracts(calc_df, "GBP", datetime.date(2026, 5, 28))
+
+    # Should fallback to MGM because SBP is invalid (no calls)
+    assert set(selected["Option_Type"]) == {"MGM"}
+
+
+def test_xau_spot_detection_uses_same_series_and_positive_oi():
+    raw_df = pd.DataFrame(
+        [
+            # Stale/zero-OI mark that used to dominate month-level call max.
+            {"Option_Type": "GWT", "Contract_Month": "JUN26", "Strike": 4700.0, "Settle": 550.6, "OI": 0, "Is_Call": True},
+            {"Option_Type": "GWT", "Contract_Month": "JUN26", "Strike": 4700.0, "Settle": 0.5, "OI": 43, "Is_Call": True},
+            # Matching call/put inside the same OG4 series implies spot near 4149.5.
+            {"Option_Type": "OG4", "Contract_Month": "JUN26", "Strike": 4700.0, "Settle": 0.2, "OI": 206, "Is_Call": True},
+            {"Option_Type": "OG4", "Contract_Month": "JUN26", "Strike": 4700.0, "Settle": 550.7, "OI": 1, "Is_Call": False},
+            {"Option_Type": "OG4", "Contract_Month": "JUN26", "Strike": 4000.0, "Settle": 149.6, "OI": 10, "Is_Call": True},
+            {"Option_Type": "OG4", "Contract_Month": "JUN26", "Strike": 4000.0, "Settle": 0.2, "OI": 10, "Is_Call": False},
+        ]
+    )
+
+    spot, spots_per_month, _ = detect_spot_and_classify(raw_df, "XAU")
+
+    assert abs(spots_per_month["JUN26"] - 4149.4) < 0.2
+    assert abs(spot - 4149.4) < 0.2
+
+
+def test_atm_iv_estimate_prefers_liquid_near_atm_series():
+    # Same ATM area, but the low-OI put has an inflated settlement mark. The
+    # range calculation should follow the liquid monthly series instead.
+    option_df = pd.DataFrame(
+        [
+            {"Strike": 4150.0, "Settle": 31.1, "OI": 178, "Is_Call": True},
+            {"Strike": 4150.0, "Settle": 31.7, "OI": 1077, "Is_Call": False},
+            {"Strike": 4150.0, "Settle": 110.1, "OI": 2, "Is_Call": False},
+            {"Strike": 4140.0, "Settle": 35.0, "OI": 400, "Is_Call": True},
+            {"Strike": 4160.0, "Settle": 35.0, "OI": 350, "Is_Call": False},
+        ]
+    )
+
+    iv_atm = estimate_atm_iv(option_df, "XAU", 4149.4, 1.0 / 252.0, 0.0, 0.03)
+
+    assert 0.20 < iv_atm < 0.45
+
+
+def test_atm_iv_estimate_uses_nearest_strikes_not_wide_smile_window():
+    option_df = pd.DataFrame(
+        [
+            {"Strike": 1.1400, "Settle": 0.0040, "OI": 3800, "Is_Call": True},
+            {"Strike": 1.1375, "Settle": 0.0031, "OI": 862, "Is_Call": False},
+            {"Strike": 1.1425, "Settle": 0.0037, "OI": 200, "Is_Call": True},
+            {"Strike": 1.1600, "Settle": 0.0100, "OI": 100000, "Is_Call": True},
+            {"Strike": 1.1800, "Settle": 0.0200, "OI": 100000, "Is_Call": True},
+        ]
+    )
+
+    iv_atm = estimate_atm_iv(option_df, "EUR", 1.1400, 7.0 / 252.0, 0.0, 0.02)
+
+    assert 0.04 < iv_atm < 0.07
+
+
+def test_iv_month_rollover_skips_all_near_expiry_months():
+    selected_month, selected_dte, old_month, old_dte = select_iv_month(
+        ["JUN26", "JUL26", "AUG26"],
+        "XAU",
+        datetime.date(2026, 6, 24),
+    )
+
+    assert old_month == "JUN26"
+    assert old_dte < 5
+    assert selected_month == "AUG26"
+    assert selected_dte >= 5

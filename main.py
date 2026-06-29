@@ -9,6 +9,21 @@ from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_a
 
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 
+def resolve_session_date(pdf_path, bulletin_date=None, today=None):
+    if today is None:
+        today = datetime.date.today()
+
+    publish_date = None
+    try:
+        publish_date = datetime.datetime.fromtimestamp(os.path.getmtime(pdf_path)).date()
+    except OSError:
+        pass
+
+    if publish_date is not None and publish_date >= today:
+        return today
+    return bulletin_date or publish_date or today
+
+
 MONTH_MAP = {
     'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
     'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
@@ -66,6 +81,15 @@ for q in ['QN1', 'QN2', 'QN3', 'QN4', 'QN']:
     NAS_DAILY_CODE_DOW[q] = 4
 NAS_WEEKLY_CODE_DOW = NAS_DAILY_CODE_DOW.copy()
 
+NAS_CALL_CODES_BY_WEEKDAY = {
+    0: ['QMW', 'DMQ', 'Q1A', 'Q2A', 'Q3A', 'Q4A', 'Q5A'],
+    1: ['QTW', 'DTQ', 'Q1B', 'Q2B', 'Q3B', 'Q4B', 'Q5B'],
+    2: ['QWW', 'DWQ', 'Q1C', 'Q2C', 'Q3C', 'Q4C', 'Q5C'],
+    3: ['QRW', 'DRQ', 'Q1D', 'Q2D', 'Q3D', 'Q4D', 'Q5D'],
+    4: ['QN', 'QN1', 'QN2', 'QN3', 'QN4'],
+}
+NAS_PUT_CODES = ['QN', 'QN1', 'QN2', 'QN3', 'QN4', 'QMW', 'QTW', 'QWW', 'QRW', 'DMQ', 'DTQ', 'DWQ', 'DRQ']
+
 BTC_DAILY_BY_WEEKDAY = {0: 'BTC', 1: 'BTC', 2: 'BTC', 3: 'BTC', 4: 'BTC'}
 BTC_DAILY_CODES = ['BTC']
 BTC_WEEKLY_CODES = ['BTC']
@@ -83,10 +107,12 @@ CAD_DAILY_CODE_DOW = {
 }
 CAD_WEEKLY_CODE_DOW = CAD_DAILY_CODE_DOW.copy()
 
-SPX_DAILY_BY_WEEKDAY = {0: 'WK', 1: 'WK', 2: 'WK', 3: 'WK', 4: 'EMINI'}
-SPX_DAILY_CODES = ['WK', 'EMINI', 'SME']
+SPX_DAILY_BY_WEEKDAY = {0: 'XMS', 1: 'XTS', 2: 'XWS', 3: 'XRS', 4: 'EOW'}
+SPX_DAILY_CODES = ['XMS', 'XTS', 'XWS', 'XRS', 'EOW1', 'EOW2', 'EOW3', 'EOW4', 'WK', 'EMINI', 'SME']
 SPX_WEEKLY_CODES = SPX_DAILY_CODES.copy()
 SPX_DAILY_CODE_DOW = {
+    'XMS': 0, 'XTS': 1, 'XWS': 2, 'XRS': 3,
+    'EOW1': 4, 'EOW2': 4, 'EOW3': 4, 'EOW4': 4,
     'WK': 4, 'EMINI': 4, 'SME': 4
 }
 SPX_WEEKLY_CODE_DOW = SPX_DAILY_CODE_DOW.copy()
@@ -209,6 +235,28 @@ FALLBACK_IV = {
     'EUR': 0.07, 'GBP': 0.06, 'USDCAD': 0.06, 'CAD': 0.06,
 }
 
+ATM_IV_DISTANCE_PCT = {
+    'EUR': 0.02,
+    'GBP': 0.02,
+    'USDCAD': 0.02,
+    'CAD': 0.02,
+    'XAU': 0.03,
+    'NAS': 0.03,
+    'SPX': 0.03,
+    'BTC': 0.10,
+}
+
+ATM_IV_STRIKE_COUNT = {
+    'EUR': 3,
+    'GBP': 3,
+    'USDCAD': 3,
+    'CAD': 3,
+    'XAU': 3,
+    'NAS': 3,
+    'SPX': 3,
+    'BTC': 5,
+}
+
 
 def is_valid_daily_df(df):
     if df.empty:
@@ -268,6 +316,46 @@ def filter_nearest_code(df, code_dow_map, as_of_date):
         
     target_codes = dow_to_codes[target_dow]
     return df[df['Option_Type'].isin(target_codes)]
+
+def select_daily_call_put_by_codes(calc_df, call_codes, put_codes):
+    if calc_df.empty or 'Option_Type' not in calc_df.columns:
+        return pd.DataFrame(columns=calc_df.columns)
+
+    call_base = calc_df[
+        calc_df['Option_Type'].isin(call_codes) &
+        (calc_df['Call_OI'] > 0) &
+        (calc_df['Call_Settle'] > 0.0)
+    ].copy()
+    if call_base.empty:
+        return pd.DataFrame(columns=calc_df.columns)
+
+    call_df = filter_nearest_month(call_base)
+    selected_month = nearest_month(call_df['Contract_Month'].dropna().unique())
+    if not selected_month:
+        return pd.DataFrame(columns=calc_df.columns)
+
+    same_code_put_base = calc_df[
+        calc_df['Option_Type'].isin(call_codes) &
+        (calc_df['Contract_Month'] == selected_month) &
+        (calc_df['Put_OI'] > 0) &
+        (calc_df['Put_Settle'] > 0.0)
+    ].copy()
+
+    if not same_code_put_base.empty:
+        put_df = same_code_put_base
+    else:
+        put_base = calc_df[
+            calc_df['Option_Type'].isin(put_codes) &
+            (calc_df['Put_OI'] > 0) &
+            (calc_df['Put_Settle'] > 0.0)
+        ].copy()
+        put_df = put_base[put_base['Contract_Month'] == selected_month].copy()
+
+    if put_df.empty:
+        put_df = filter_nearest_month(put_base)
+
+    combined = pd.concat([call_df, put_df], ignore_index=True)
+    return combined if is_valid_daily_df(combined) else pd.DataFrame(columns=calc_df.columns)
 
 
 
@@ -421,23 +509,13 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
         return filter_nearest_month(nearest_daily)
 
     if currency == 'NAS':
-        week_num = (as_of_date.day - 1) // 7 + 1
-        if dow == 0:
-            target_code = f'Q{week_num}A'
-        elif dow == 1:
-            target_code = f'Q{week_num}B'
-        elif dow == 2:
-            target_code = f'Q{week_num}C'
-        elif dow == 3:
-            target_code = f'Q{week_num}D'
-        elif dow == 4:
-            target_code = f'QN{week_num}' if week_num <= 4 else 'QN'
-        else:
-            target_code = 'QN1'
-            
-        exact = calc_df[calc_df['Option_Type'] == target_code]
-        if is_valid_daily_df(exact):
-            return filter_nearest_month(exact)
+        selected = select_daily_call_put_by_codes(
+            calc_df,
+            NAS_CALL_CODES_BY_WEEKDAY.get(dow, NAS_CALL_CODES_BY_WEEKDAY[4]),
+            NAS_PUT_CODES,
+        )
+        if is_valid_daily_df(selected):
+            return selected
 
         weekly = calc_df[calc_df['Option_Type'].isin(NAS_WEEKLY_CODES)]
         nearest_weekly = filter_nearest_code(weekly, NAS_WEEKLY_CODE_DOW, as_of_date) if not weekly.empty else pd.DataFrame()
@@ -470,7 +548,11 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
         nearest_daily = filter_nearest_code(daily, CAD_DAILY_CODE_DOW, as_of_date) if not daily.empty else pd.DataFrame()
         return filter_nearest_month(nearest_daily)
     if currency == 'SPX':
-        target_code = SPX_DAILY_BY_WEEKDAY.get(dow)
+        if dow == 4:
+            week_num = (as_of_date.day - 1) // 7 + 1
+            target_code = f'EOW{min(max(week_num, 1), 4)}'
+        else:
+            target_code = SPX_DAILY_BY_WEEKDAY.get(dow)
         exact = calc_df[calc_df['Option_Type'] == target_code]
         if is_valid_daily_df(exact):
             return filter_nearest_month(exact)
@@ -510,7 +592,7 @@ def validate_mdd_summary(summary, currency):
         missing.append("Global_Month")
 
     if missing:
-        print(f"WARNING: {currency} summary is missing required MDD data: {', '.join(missing)}")
+        raise RuntimeError(f"{currency} summary is missing required MDD data: {', '.join(missing)}")
 
 
 def select_near_spot_mdd_settle(df, type_prefix, spot_price):
@@ -563,6 +645,142 @@ FALLBACK_SPOT_MAP = {
     'BTC': 63000.0,
 }
 
+def estimate_spot_from_put_call_parity(month_df, fallback_spot):
+    """
+    Estimate the futures/forward reference from matching calls and puts.
+
+    CME bulletins can contain several option series in the same contract month.
+    Mixing those series by month alone can pair a weekly call with a monthly put
+    and produce a false ATM strike. Keep parity candidates inside one
+    Option_Type and ignore zero-OI rows, which are often stale settlement marks.
+    """
+    if month_df.empty:
+        return None
+
+    required_cols = {'Option_Type', 'Strike', 'Settle', 'OI', 'Is_Call'}
+    if not required_cols.issubset(month_df.columns):
+        return None
+
+    candidates = []
+    valid_df = month_df[(month_df['OI'] > 0) & (month_df['Settle'] > 0.0)].copy()
+    if valid_df.empty:
+        return None
+
+    for _, series_df in valid_df.groupby('Option_Type', dropna=False):
+        calls = series_df[series_df['Is_Call'] == True].groupby('Strike')['Settle'].max()
+        puts = series_df[series_df['Is_Call'] == False].groupby('Strike')['Settle'].max()
+        common = calls.index.intersection(puts.index)
+        if common.empty:
+            continue
+
+        parity_spots = common.to_series().astype(float) + calls[common].astype(float) - puts[common].astype(float)
+        parity_spots = parity_spots[parity_spots > 0.0]
+        if fallback_spot > 0.0:
+            parity_spots = parity_spots[(parity_spots >= 0.5 * fallback_spot) & (parity_spots <= 1.5 * fallback_spot)]
+
+        candidates.extend(parity_spots.tolist())
+
+    if not candidates:
+        return None
+
+    return float(pd.Series(candidates).median())
+
+def weighted_median(values, weights):
+    if len(values) == 0:
+        return None
+    pairs = sorted(zip(values, weights), key=lambda x: x[0])
+    total_weight = sum(w for _, w in pairs)
+    if total_weight <= 0:
+        return None
+    midpoint = total_weight / 2.0
+    running = 0.0
+    for value, weight in pairs:
+        running += weight
+        if running >= midpoint:
+            return float(value)
+    return float(pairs[-1][0])
+
+def estimate_atm_iv(option_df, currency, spot, T, r, min_iv):
+    if option_df.empty or spot <= 0.0:
+        return None
+
+    distance_pct = ATM_IV_DISTANCE_PCT.get(currency, 0.03)
+    valid_df = option_df[(option_df['OI'] > 0) & (option_df['Settle'] > 0.0)].copy()
+    if valid_df.empty:
+        return None
+
+    valid_df['Distance_Pct'] = (valid_df['Strike'] - spot).abs() / spot
+    strike_count = ATM_IV_STRIKE_COUNT.get(currency, 3)
+    nearest_strikes = sorted(valid_df['Strike'].dropna().unique(), key=lambda strike: abs(strike - spot))[:strike_count]
+    candidates = valid_df[valid_df['Strike'].isin(nearest_strikes)].copy()
+    if len(candidates) < 2:
+        candidates = valid_df[valid_df['Distance_Pct'] <= distance_pct].copy()
+    if len(candidates) < 2:
+        candidates = valid_df[valid_df['Distance_Pct'] <= distance_pct * 2.0].copy()
+    if candidates.empty:
+        return None
+
+    iv_values = []
+    weights = []
+    for _, row in candidates.iterrows():
+        option_type = 'C' if bool(row['Is_Call']) else 'P'
+        iv = implied_volatility(row['Settle'], spot, row['Strike'], T, r, option_type)
+        if min_iv <= iv <= 3.0:
+            iv_values.append(iv)
+            weights.append(max(float(row['OI']), 1.0))
+
+    return weighted_median(iv_values, weights)
+
+def select_iv_month(months, currency, as_of_date):
+    sorted_months = sorted([m for m in months if month_sort_key(m) != (9999, 99)], key=month_sort_key)
+    if not sorted_months:
+        return None, 21, None, None
+
+    original_month = sorted_months[0]
+    original_dte = compute_dte(original_month, currency, as_of_date)
+    selected_month = original_month
+    selected_dte = original_dte
+    for candidate_month in sorted_months:
+        candidate_dte = compute_dte(candidate_month, currency, as_of_date)
+        if candidate_dte >= MIN_DTE_FOR_IV:
+            selected_month = candidate_month
+            selected_dte = candidate_dte
+            break
+
+    return selected_month, selected_dte, original_month, original_dte
+
+def convert_cad_options_to_usdcad(cad_raw, cad_spot):
+    usdcad_raw = cad_raw.copy()
+    usdcad_raw['Strike'] = 1.0 / cad_raw['Strike']
+    usdcad_raw['Is_Call'] = ~cad_raw['Is_Call']
+
+    call_mask = cad_raw['Is_Call'] == True
+    put_mask = cad_raw['Is_Call'] == False
+    usdcad_raw['Settle'] = 0.0
+
+    # CADUSD call -> USDCAD put. Exact breakeven conversion:
+    # CAD BE = K + p, USDCAD BE = 1 / (K + p), premium = 1/K - BE.
+    call_denominator = cad_raw.loc[call_mask, 'Strike'] + cad_raw.loc[call_mask, 'Settle']
+    valid_call = call_mask & (cad_raw['Strike'] > 0.0) & (call_denominator > 0.0)
+    usdcad_raw.loc[valid_call, 'Settle'] = (
+        (1.0 / cad_raw.loc[valid_call, 'Strike']) -
+        (1.0 / (cad_raw.loc[valid_call, 'Strike'] + cad_raw.loc[valid_call, 'Settle']))
+    )
+
+    # CADUSD put -> USDCAD call. CAD BE = K - p, USDCAD BE = 1 / (K - p),
+    # premium = BE - 1/K.
+    put_denominator = cad_raw.loc[put_mask, 'Strike'] - cad_raw.loc[put_mask, 'Settle']
+    valid_put = put_mask & (cad_raw['Strike'] > 0.0) & (put_denominator > 0.0)
+    usdcad_raw.loc[valid_put, 'Settle'] = (
+        (1.0 / (cad_raw.loc[valid_put, 'Strike'] - cad_raw.loc[valid_put, 'Settle'])) -
+        (1.0 / cad_raw.loc[valid_put, 'Strike'])
+    )
+
+    # Fallback for malformed rows that cannot be converted exactly.
+    invalid = usdcad_raw['Settle'] <= 0.0
+    usdcad_raw.loc[invalid, 'Settle'] = cad_raw.loc[invalid, 'Settle'] / (cad_raw.loc[invalid, 'Strike'] * cad_spot)
+    return usdcad_raw
+
 def detect_spot_and_classify(raw_df, currency):
     if raw_df.empty:
         return FALLBACK_SPOT_MAP.get(currency, 1.0), {}, raw_df
@@ -594,17 +812,20 @@ def detect_spot_and_classify(raw_df, currency):
         
         # If Is_Call is perfectly known, use it
         if not m_df['Is_Call'].isna().all():
-            calls = m_df[m_df['Is_Call'] == True].groupby('Strike')['Settle'].max()
-            puts = m_df[m_df['Is_Call'] == False].groupby('Strike')['Settle'].max()
-            common = calls.index.intersection(puts.index)
-            if not common.empty:
-                diffs = (calls[common] - puts[common]).abs()
-                # filter by min_settle_threshold if needed
-                valid_common = [s for s in common if calls[s] >= min_settle_threshold and puts[s] >= min_settle_threshold]
-                if valid_common:
-                    spot_m = diffs[valid_common].idxmin()
-                else:
-                    spot_m = diffs.idxmin()
+            parity_spot = estimate_spot_from_put_call_parity(m_df, fallback_spot)
+            if parity_spot is not None:
+                spot_m = parity_spot
+            else:
+                calls = m_df[(m_df['Is_Call'] == True) & (m_df['OI'] > 0)].groupby('Strike')['Settle'].max()
+                puts = m_df[(m_df['Is_Call'] == False) & (m_df['OI'] > 0)].groupby('Strike')['Settle'].max()
+                common = calls.index.intersection(puts.index)
+                if not common.empty:
+                    diffs = (calls[common] - puts[common]).abs()
+                    valid_common = [s for s in common if calls[s] >= min_settle_threshold and puts[s] >= min_settle_threshold]
+                    if valid_common:
+                        spot_m = diffs[valid_common].idxmin()
+                    else:
+                        spot_m = diffs.idxmin()
         else:
             # If Is_Call is missing (e.g. EUR mixed CALLS & PUTS table), we cannot 
             # find the spot using diffs because each strike only has one OTM option.
@@ -660,37 +881,34 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         
         # Determine which month to use for ATM IV (auto-rollover)
         all_months = classified_df['Contract_Month'].dropna().unique()
-        sorted_iv_months = sorted([m for m in all_months if month_sort_key(m) != (9999, 99)], key=month_sort_key)
-        
-        iv_month = sorted_iv_months[0] if sorted_iv_months else None
-        iv_dte = compute_dte(iv_month, currency, as_of_date) if iv_month else 21
-        
-        if iv_dte < MIN_DTE_FOR_IV and len(sorted_iv_months) > 1:
-            old_month, old_dte = iv_month, iv_dte
-            iv_month = sorted_iv_months[1]
-            iv_dte = compute_dte(iv_month, currency, as_of_date)
+        iv_month, iv_dte, old_month, old_dte = select_iv_month(all_months, currency, as_of_date)
+        if old_month != iv_month:
             print(f"[{currency}] Near-expiry rollover: {old_month} (DTE={old_dte}) -> {iv_month} (DTE={iv_dte})")
         
         T_iv = max(iv_dte / 252.0, 1.0 / 252.0)
         
-        # Find ATM in IV month
+        # Estimate ATM IV from liquid near-ATM options in the IV month. Some
+        # CME bulletins contain multiple series at the same strike; taking the
+        # first nearest row can select a tiny-OI weekly mark and blow out R68/R95.
         iv_month_df = classified_df[classified_df['Contract_Month'] == iv_month] if iv_month else classified_df
         if iv_month_df.empty:
             iv_month_df = classified_df
-        
-        atm_idx = (iv_month_df['Strike'] - spot).abs().idxmin()
-        atm_row = iv_month_df.loc[atm_idx]
-        price_atm = atm_row['Settle']
-        is_call_val = atm_row['Is_Call']
-        if isinstance(is_call_val, pd.Series):
-            is_call_val = is_call_val.iloc[0]
-        strike_atm = atm_row['Strike']
-        if isinstance(strike_atm, pd.Series):
-            strike_atm = strike_atm.iloc[0]
-        iv_atm = implied_volatility(price_atm, spot, strike_atm, T_iv, 0.0, 'C' if is_call_val else 'P')
-        
-        # Minimum IV sanity check
+
         min_iv = MIN_IV_THRESHOLD.get(currency, 0.03)
+        iv_atm = estimate_atm_iv(iv_month_df, currency, spot, T_iv, r, min_iv)
+        if iv_atm is None:
+            atm_idx = (iv_month_df['Strike'] - spot).abs().idxmin()
+            atm_row = iv_month_df.loc[atm_idx]
+            price_atm = atm_row['Settle']
+            is_call_val = atm_row['Is_Call']
+            if isinstance(is_call_val, pd.Series):
+                is_call_val = is_call_val.iloc[0]
+            strike_atm = atm_row['Strike']
+            if isinstance(strike_atm, pd.Series):
+                strike_atm = strike_atm.iloc[0]
+            iv_atm = implied_volatility(price_atm, spot, strike_atm, T_iv, 0.0, 'C' if is_call_val else 'P')
+
+        # Minimum IV sanity check
         if iv_atm < min_iv:
             iv_atm = FALLBACK_IV.get(currency, 0.08)
     else:
@@ -835,13 +1053,6 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         'Abs_Gamma': 'sum'
     }).reset_index()
     
-    # Winsorize GEX outliers: cap at P97.5 to prevent single dominant strike
-    # from squashing all other levels in the MT5 noise filter
-    nonzero_gex = summary[summary['GEX'] != 0]['GEX'].abs()
-    if len(nonzero_gex) > 10:
-        cap = nonzero_gex.quantile(0.975)
-        summary['GEX'] = summary['GEX'].clip(lower=-cap, upper=cap)
-    
     summary = summary.merge(daily_call, on='Strike', how='left')
     summary = summary.merge(daily_put, on='Strike', how='left')
     summary = summary.merge(global_call, on='Strike', how='left')
@@ -869,7 +1080,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     validate_mdd_summary(summary, currency)
     
     # Save to CSV
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    output_date = as_of_date if as_of_date is not None else datetime.date.today()
+    today_str = output_date.strftime("%Y-%m-%d")
     filename = f"GEX_USDCAD_{today_str}.csv" if currency == "USDCAD" else f"GEX_{currency}USD_{today_str}.csv"
     out_file = os.path.join(output_dir, filename)
     summary.to_csv(out_file, index=False)
@@ -898,7 +1110,7 @@ if __name__ == "__main__":
     if eur_ok:
         try:
             eur_bulletin_date = extract_bulletin_date(eur_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(eur_dest, eur_bulletin_date)
             print(f"[EUR] CME bulletin trade date: {eur_bulletin_date}; session date: {session_date}")
             eur_raw = parse_cme_pdf(eur_dest, "EUR", is_call_only=None)
             calculate_gex_pipeline(eur_raw, "EUR", DATA_DIR, session_date)
@@ -909,7 +1121,7 @@ if __name__ == "__main__":
     if gbp_call_ok and gbp_put_ok:
         try:
             gbp_bulletin_date = extract_bulletin_date(gbp_call_dest) or extract_bulletin_date(gbp_put_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(gbp_call_dest, gbp_bulletin_date)
             print(f"[GBP] CME bulletin trade date: {gbp_bulletin_date}; session date: {session_date}")
             gbp_calls = parse_cme_pdf(gbp_call_dest, "GBP", is_call_only=True)
             gbp_puts = parse_cme_pdf(gbp_put_dest, "GBP", is_call_only=False)
@@ -925,7 +1137,7 @@ if __name__ == "__main__":
     if xau_ok:
         try:
             xau_bulletin_date = extract_bulletin_date(xau_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(xau_dest, xau_bulletin_date)
             print(f"[XAU] CME bulletin trade date: {xau_bulletin_date}; session date: {session_date}")
             xau_raw = parse_cme_pdf(xau_dest, "XAU", is_call_only=None)
             if not xau_raw.empty:
@@ -942,7 +1154,7 @@ if __name__ == "__main__":
     if nas_ok:
         try:
             nas_bulletin_date = extract_bulletin_date(nas_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(nas_dest, nas_bulletin_date)
             print(f"[NAS] CME bulletin trade date: {nas_bulletin_date}; session date: {session_date}")
             nas_raw = parse_cme_pdf(nas_dest, "NAS", is_call_only=None)
             if not nas_raw.empty:
@@ -964,7 +1176,7 @@ if __name__ == "__main__":
     if sp_call_ok and sp_put_ok:
         try:
             sp_bulletin_date = extract_bulletin_date(sp_call_dest) or extract_bulletin_date(sp_put_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(sp_call_dest, sp_bulletin_date)
             print(f"[SPX] CME bulletin trade date: {sp_bulletin_date}; session date: {session_date}")
             sp_calls = parse_cme_pdf(sp_call_dest, "SPX", is_call_only=True)
             sp_puts = parse_cme_pdf(sp_put_dest, "SPX", is_call_only=False)
@@ -982,7 +1194,7 @@ if __name__ == "__main__":
     if crypto_ok:
         try:
             crypto_bulletin_date = extract_bulletin_date(crypto_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(crypto_dest, crypto_bulletin_date)
             print(f"[Crypto] CME bulletin trade date: {crypto_bulletin_date}; session date: {session_date}")
             crypto_raw = parse_cme_pdf(crypto_dest, "BTC", is_call_only=None)
             
@@ -1009,7 +1221,7 @@ if __name__ == "__main__":
     if cad_call_ok and cad_put_ok:
         try:
             cad_bulletin_date = extract_bulletin_date(cad_call_dest) or extract_bulletin_date(cad_put_dest) or datetime.date.today()
-            session_date = datetime.date.today()
+            session_date = resolve_session_date(cad_call_dest, cad_bulletin_date)
             print(f"[USDCAD] CME bulletin trade date: {cad_bulletin_date}; session date: {session_date}")
             cad_calls = parse_cme_pdf(cad_call_dest, "CAD", is_call_only=True)
             cad_puts = parse_cme_pdf(cad_put_dest, "CAD", is_call_only=False)
@@ -1028,10 +1240,7 @@ if __name__ == "__main__":
                     
                 print(f"[CAD] Detected raw CADUSD spot price for conversion: {cad_spot:.5f}")
                 
-                usdcad_raw = cad_raw.copy()
-                usdcad_raw['Strike'] = 1.0 / cad_raw['Strike']
-                usdcad_raw['Is_Call'] = ~cad_raw['Is_Call']
-                usdcad_raw['Settle'] = cad_raw['Settle'] / (cad_raw['Strike'] * cad_spot)
+                usdcad_raw = convert_cad_options_to_usdcad(cad_raw, cad_spot)
                 
                 calculate_gex_pipeline(usdcad_raw, "USDCAD", DATA_DIR, session_date)
         except Exception as e:

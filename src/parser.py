@@ -1,6 +1,7 @@
 import os
 import re
 import datetime
+from email.utils import parsedate_to_datetime
 import pandas as pd
 import pdfplumber
 from curl_cffi import requests
@@ -20,6 +21,17 @@ MONTH_NAME_MAP = {
     "DEC": 12,
 }
 
+MONTH_NUM_TO_CODE = {v: k for k, v in MONTH_NAME_MAP.items()}
+
+def month_code_from_yyyymm00(token: str):
+    if not re.match(r'^20\d{6}$', token):
+        return None
+    month_num = int(token[4:6])
+    month_code = MONTH_NUM_TO_CODE.get(month_num)
+    if month_code is None:
+        return None
+    return f"{month_code}{token[2:4]}"
+
 def download_cme_bulletin(url_or_section: str, dest_path: str):
     """
     Downloads a CME daily bulletin section using curl_cffi to bypass Akamai WAF.
@@ -33,6 +45,13 @@ def download_cme_bulletin(url_or_section: str, dest_path: str):
         if response.status_code == 200:
             with open(dest_path, 'wb') as f:
                 f.write(response.content)
+            last_modified = response.headers.get("last-modified")
+            if last_modified:
+                try:
+                    modified_dt = parsedate_to_datetime(last_modified)
+                    os.utime(dest_path, (modified_dt.timestamp(), modified_dt.timestamp()))
+                except (TypeError, ValueError, OSError):
+                    pass
             print(f"Successfully downloaded {section_name} ({len(response.content)} bytes)")
             return True
         else:
@@ -50,6 +69,37 @@ def clean_value(val):
         return float(cleaned)
     except:
         return 0.0
+
+def extract_oi(parts):
+    idx = len(parts) - 1
+    # 1. Skip contract high/low if present (at most 2 columns)
+    skipped_range = 0
+    while idx >= 0 and skipped_range < 2:
+        val = parts[idx]
+        if val == "----" or "." in val:
+            idx -= 1
+            skipped_range += 1
+        else:
+            break
+            
+    # 2. Skip OI Change
+    if idx >= 0:
+        val = parts[idx]
+        if val in ["UNCH", "UNCHANGE", "UNCHANGED", "----"]:
+            idx -= 1
+        elif val.isdigit():
+            if idx > 0 and parts[idx - 1] in ["+", "-"]:
+                idx -= 2
+        elif any(sign in val for sign in ["+", "-"]):
+            idx -= 1
+            
+    # 3. Open Interest
+    if idx >= 0:
+        val = parts[idx]
+        cleaned = re.sub(r'\D', '', val)
+        if cleaned:
+            return int(cleaned)
+    return 0
 
 def parse_bulletin_date_from_text(text: str):
     match = re.search(r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\b', text)
@@ -105,40 +155,101 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 parts = line.split()
                 if not parts:
                     continue
+
+                if currency in ['NAS', 'NQ'] and len(parts) >= 3 and parts[2].upper() == 'MID':
+                    numeric_month = month_code_from_yyyymm00(parts[0].upper())
+                    if numeric_month:
+                        current_contract_month = numeric_month
+                        current_option_type = re.sub(r'[^A-Z0-9]', '', parts[1].upper())
+                        is_call_state = False
+                        continue
                     
                 # Look for section headers indicating option type and contract month
                 if not parts[0].isdigit():
                     line_upper = line.upper()
+                    if "BULLETIN" in line_upper:
+                        continue
+
+                    # NASDAQ MID tables are split into a month-code call block
+                    # (e.g. "JUN26 QWW MID") and a numeric-date put block
+                    # (e.g. "20260600 QWW MID"). Preserve both sides.
+                    if currency in ['NAS', 'NQ'] and len(parts) >= 3 and parts[2].upper() == 'MID':
+                        first = parts[0].upper()
+                        second = re.sub(r'[^A-Z0-9]', '', parts[1].upper())
+                        numeric_month = month_code_from_yyyymm00(first)
+                        if numeric_month and second:
+                            current_contract_month = numeric_month
+                            current_option_type = second
+                            is_call_state = False
+                            continue
+                        if re.match(r'^[A-Z]{3}\d{2}$', first) and second:
+                            current_contract_month = first
+                            current_option_type = second
+                            is_call_state = True
+                            continue
+                        
                     is_header = False
                     if any(kw in line_upper for kw in ["CALL", "PUT", "OPTIONS", "OPTION", "OOF", "OPT"]):
                         is_header = True
+                    elif re.match(r'^[A-Z]{3}\d{2}$', parts[0].upper()) and len(parts) >= 2 and re.match(r'^[A-Z]', parts[1]):
+                        is_header = True
+                    elif len(parts) >= 3 and parts[-1].upper() in ['C', 'P']:
+                        is_header = True
                     
                     if is_header:
-                        first_token = parts[0]
-                        # If first token is a contract month (e.g. JUN26), check the next token
-                        first_cleaned = re.sub(r'[^A-Z0-9]', '', first_token.upper())
-                        if re.match(r'^[A-Z]{3}\d{2}$', first_cleaned) and len(parts) > 1:
-                            token_to_check = parts[1]
+                        # Extract option code from header (handle parent-child codes e.g. GBU OPT - 2BP)
+                        header_line_clean = re.sub(r'\(.*?\)', '', line)
+                        if "-" in header_line_clean:
+                            sub_parts = header_line_clean.split("-")
+                            if len(sub_parts) > 1:
+                                tail_tokens = sub_parts[-1].strip().split()
+                                if tail_tokens:
+                                    token = tail_tokens[0]
+                                    candidate = re.sub(r'[^A-Z0-9]', '', token.upper())
+                                    if candidate and not candidate.isdigit():
+                                        option_code = candidate
+                                    else:
+                                        # Numeric tail (e.g. "100" from "NASDAQ-100") — fall back to first token
+                                        fb_parts = header_line_clean.split()
+                                        if fb_parts:
+                                            fb0 = re.sub(r'[^A-Z0-9]', '', fb_parts[0].upper())
+                                            if re.match(r'^[A-Z]{3}\d{2}$', fb0) and len(fb_parts) > 1:
+                                                option_code = re.sub(r'[^A-Z0-9]', '', fb_parts[1].upper())
+                                            else:
+                                                option_code = fb0
                         else:
-                            token_to_check = first_token
-                            
-                        option_code = re.sub(r'[^A-Z0-9]', '', token_to_check.upper())
-                        # Length 2-5, ignore PGxx, FOR, TOTAL, RTO, and contract months
+                            clean_parts = header_line_clean.split()
+                            if clean_parts:
+                                first_token = clean_parts[0]
+                                first_cleaned = re.sub(r'[^A-Z0-9]', '', first_token.upper())
+                                if re.match(r'^[A-Z]{3}\d{2}$', first_cleaned) and len(clean_parts) > 1:
+                                    token_to_check = clean_parts[1]
+                                else:
+                                    token_to_check = first_token
+                                option_code = re.sub(r'[^A-Z0-9]', '', token_to_check.upper())
+                            else:
+                                option_code = ""
+                        
                         if (2 <= len(option_code) <= 5) and not option_code.startswith("PG") and option_code not in ["FOR", "TOTAL", "RTO"] and not re.match(r'^[A-Z]{3}\d{2}$', option_code):
                             current_option_type = option_code
                             
-                    if currency in ['XAU', 'BTC', 'ETH'] and is_header:
-                        if "CALL" in line_upper:
+                    if is_header:
+                        if "CALL" in line_upper and "PUT" in line_upper:
+                            is_call_state = None
+                        elif "CALL" in line_upper:
                             is_call_state = True
                         elif "PUT" in line_upper:
                             is_call_state = False
-                        else:
-                            is_call_state = None
+                        elif parts[-1].upper() == 'C':
+                            is_call_state = True
+                        elif parts[-1].upper() == 'P':
+                            is_call_state = False
                             
-                    for p in parts:
-                        if re.match(r'^[A-Z]{3}\d{2}$', p):
-                            current_contract_month = p
-                            break
+                    if "EXPIRATION" not in line_upper:
+                        for p in parts:
+                            if re.match(r'^[A-Z]{3}\d{2}$', p):
+                                current_contract_month = p
+                                break
                     continue
                     
                 if len(parts) < 8:
@@ -148,79 +259,73 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 strike = float(strike_raw)
                 if currency in ['EUR', 'CAD']:
                     strike /= 10000.0
-                elif currency in ['XAU', 'NAS', 'NQ', 'BTC', 'ETH', 'SPX']:
+                elif currency in ['XAU', 'NAS', 'NQ', 'BTC', 'SPX']:
                     pass
                 else:
                     strike /= 1000.0
-                    
-                # Find Delta index (scanning from right to left to avoid Open/High/Low prices)
-                # Note: Delta must start with a dot or 0. to avoid matching whole number volume/OI (e.g. 253)
-                delta_idx = -1
-                for idx in range(len(parts) - 1, 0, -1):
-                    part = parts[idx]
-                    # Delta is usually a clean decimal like .146 or 0.146.
-                    # Avoid Bid/Ask quotes containing letters A/B
-                    if (re.match(r'^\.\d{3,4}$', part) or re.match(r'^0\.\d{3,4}$', part)) and not any(c in part for c in ['A', 'B', 'C', 'V', 'K']):
-                        delta_idx = idx
-                        break
-                if delta_idx < 5:
-                    continue
-                    
-                delta = clean_value(parts[delta_idx])
                 
-                # Settle is usually at delta_idx - 2, and Net Change is at delta_idx - 1.
-                # However, sometimes Settle and Change are glued together (e.g. '.00430-0.00130').
+                # Robust Settle Price Extraction
                 settle = 0.0
-                if delta_idx >= 2:
-                    settle_str = parts[delta_idx - 2]
-                    change_str = parts[delta_idx - 1]
-                    
-                    if re.search(r'\d[\+\-]\d', change_str):
-                        settle_str = change_str
-                        
-                    clean_part = settle_str
-                    # Handle cases like '.03080-0.00030' or '.100-7' or '2.30-' by splitting at - or +
+                settle_str = "0.0"
+                settle_idx = -1
+                for i_idx in range(4, min(7, len(parts))):
+                    token = parts[i_idx]
+                    if '/' not in token and any(c.isdigit() for c in token):
+                        settle_str = token
+                        settle_idx = i_idx
+                        break
+                
+                if settle_str != "0.0":
+                    is_glued = False
                     for sign in ['-', '+']:
                         if sign in settle_str and settle_str.index(sign) > 0:
-                            clean_part = settle_str.split(sign)[0]
+                            is_glued = True
+                            parts_split = settle_str.split(sign)
+                            settle_str = parts_split[0]
                             break
-                    raw_settle = clean_value(clean_part)
-                    
-                    # Scale the settle price based on currency and format
+                    clean_settle = re.sub(r'[BA\+\-\*]', '', settle_str).strip()
+                    try:
+                        raw_settle = float(clean_settle)
+                    except:
+                        raw_settle = 0.0
+                        
                     if currency == 'EUR':
                         is_decimal_quoted = False
-                        if '.' in clean_part:
-                            num_part = re.sub(r'[^\d.]', '', clean_part).strip()
-                            if '.' in num_part:
-                                after_dot = num_part.split('.')[1]
-                                if len(after_dot) >= 5:
-                                    is_decimal_quoted = True
-                        
-                        if is_decimal_quoted:
-                            settle = raw_settle
-                        else:
-                            settle = raw_settle / 1000.0
-                    elif currency in ['GBP', 'CAD']:
-                        is_decimal_quoted = False
-                        if '.' in clean_part:
-                            num_part = re.sub(r'[^\d.]', '', clean_part).strip()
+                        if '.' in clean_settle:
+                            num_part = re.sub(r'[^\d.]', '', clean_settle).strip()
                             if '.' in num_part and len(num_part.split('.')[1]) >= 5:
                                 is_decimal_quoted = True
-
+                        settle = raw_settle if is_decimal_quoted else raw_settle / 1000.0
+                    elif currency in ['GBP', 'CAD']:
+                        is_decimal_quoted = False
+                        if '.' in clean_settle:
+                            num_part = re.sub(r'[^\d.]', '', clean_settle).strip()
+                            if '.' in num_part and len(num_part.split('.')[1]) >= 5:
+                                is_decimal_quoted = True
                         settle = raw_settle if is_decimal_quoted else raw_settle / 100.0
-                    elif currency == 'XAU':
-                        settle = raw_settle
                     else:
                         settle = raw_settle
                         
-                # Find Open Interest index (scanning right from delta)
-                oi = 0
-                for idx in range(delta_idx + 1, len(parts)):
-                    part = parts[idx]
-                    cleaned = re.sub(r'[A-Z\+\-\*]', '', part).strip()
-                    if cleaned.isdigit() and len(cleaned) > 0:
-                        oi = int(cleaned)
-                        
+                # Robust Open Interest Extraction
+                oi = extract_oi(parts)
+                
+                # Robust Delta Extraction
+                delta = 0.0
+                if settle_idx != -1:
+                    delta_col = settle_idx + (1 if is_glued else 2)
+                    if delta_col < len(parts):
+                        delta_token = parts[delta_col]
+                        if delta_token != "----" and any(c.isdigit() for c in delta_token):
+                            clean_delta = re.sub(r'[AB]', '', delta_token)
+                            try:
+                                delta = float(clean_delta)
+                                if delta > 100.0:
+                                    delta /= 10000.0
+                                elif delta > 1.0:
+                                    delta /= 100.0
+                            except:
+                                delta = 0.0
+                                
                 data.append({
                     "Strike": strike,
                     "Settle": settle,
