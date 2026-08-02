@@ -18,8 +18,10 @@ def test_visual_overlap_handling_preserves_the_existing_level_selection():
         'PrintFormat("CME GEX display pruning', 1
     )[0]
 
-    assert "draw_labels" in overlap_block
-    assert "draw_rows[" not in overlap_block
+    assert "label_lane" in overlap_block
+    assert "draw_labels" not in source
+    assert "draw_rows[i] =" not in overlap_block
+    assert "draw_rows[j] =" not in overlap_block
     assert "input double   InpMinGexPercent = 15.0;" in source
     assert "input int      InpMaxVisibleGexLevels = 0;" in source
 
@@ -31,3 +33,16 @@ def test_visual_controls_and_compact_status_are_present():
     assert 'ObjectCreate(0, "Btn_ShowLabels", OBJ_BUTTON' in source
     assert 'StringFormat("GEX %s | READY"' in source
     assert 'StringFormat("%s%s%s · G%d · A%d"' in source
+
+
+def test_labels_start_near_lines_and_collisions_use_opposite_sides():
+    source = INDICATOR_PATH.read_text(encoding="utf-8")
+
+    assert "ArrayInitialize(used_lanes, false);" in source
+    assert "while(free_lane < valid_rows && used_lanes[free_lane])" in source
+    assert "label_lane[i] = free_lane;" in source
+    assert "label_on_right ? (time_end - 1200) : (time_start + 1200)" in source
+    assert "ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER" in source
+    assert "ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER" in source
+    assert "datetime flip_txt_time = time_start + 1200;" in source
+    assert "datetime label_time = time_start + 1200;" in source

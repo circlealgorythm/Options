@@ -9,7 +9,7 @@
 
 #property link      "https://github.com/circlealgorythm/Options"
 
-#property version   "1.06"
+#property version   "1.07"
 
 #property description "Indicator to fetch CME GEX options levels and plot premium boundaries, MDD, AG, and volatility zones."
 
@@ -60,7 +60,7 @@ input color    InpColorGamma  = clrDeepSkyBlue;    // Max Absolute Gamma Color
 
 input int      InpRefreshHours= 4;                 // Refresh rate in hours
 input bool     InpCompactLabels = true;            // Use compact labels without changing visible levels
-input bool     InpPreventLabelOverlap = true;      // Hide only colliding labels; keep every level line
+input bool     InpPreventLabelOverlap = true;      // Spread colliding labels without hiding levels
 input double   InpMinLabelGapPercent = 0.12;       // Minimum vertical label gap as % of reference spot
 input bool     InpFadeHistory = true;              // Visually mute older sessions
 input int      InpZoneTintPercent = 14;            // Volatility-zone tint strength against chart background
@@ -1252,45 +1252,32 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       max_abs_gex = display_max_abs_gex;
    if(display_max_abs_gamma > 0.0)
       max_abs_gamma = display_max_abs_gamma;
-   bool draw_labels[];
-   int label_priority[];
-   ArrayResize(draw_labels, valid_rows);
-   ArrayResize(label_priority, valid_rows);
-   for(int i = 0; i < valid_rows; i++)
-   {
-      draw_labels[i] = draw_rows[i];
-      label_priority[i] = 0;
-      if(!draw_rows[i])
-         continue;
-      bool is_key_label = (rows[i].strike == max_daily_call_oi_strike && max_daily_call_oi > 0.0) ||
-                          (rows[i].strike == max_daily_put_oi_strike && max_daily_put_oi > 0.0) ||
-                          (rows[i].strike == max_global_call_oi_strike && max_global_call_oi > 0.0) ||
-                          (rows[i].strike == max_global_put_oi_strike && max_global_put_oi > 0.0) ||
-                          (rows[i].strike == max_gamma_strike && max_abs_gamma > 0.0);
-      double visual_ratio = (max_abs_gex > 0.0) ? MathAbs(rows[i].total_gex) / max_abs_gex : 0.0;
-      label_priority[i] = is_key_label ? 3 : (visual_ratio >= 0.75 ? 2 : 1);
-   }
+   int label_lane[];
+   ArrayResize(label_lane, valid_rows);
+   ArrayInitialize(label_lane, 0);
    if(InpPreventLabelOverlap && reference_spot > 0.0 && InpMinLabelGapPercent > 0.0)
    {
       double min_label_gap = reference_spot * InpMinLabelGapPercent / 100.0;
+      bool used_lanes[];
+      ArrayResize(used_lanes, valid_rows);
       for(int i = 0; i < valid_rows; i++)
       {
-         if(!draw_labels[i])
+         if(!draw_rows[i])
             continue;
-         for(int j = i + 1; j < valid_rows; j++)
+         ArrayInitialize(used_lanes, false);
+         for(int j = 0; j < i; j++)
          {
-            if(!draw_labels[j] || MathAbs(rows[i].strike - rows[j].strike) >= min_label_gap)
-               continue;
-            if(label_priority[i] >= 3 && label_priority[j] >= 3)
-               continue;
-            if(label_priority[j] > label_priority[i] ||
-               (label_priority[j] == label_priority[i] && MathAbs(rows[j].total_gex) > MathAbs(rows[i].total_gex)))
+            if(draw_rows[j] && MathAbs(rows[i].strike - rows[j].strike) < min_label_gap)
             {
-               draw_labels[i] = false;
-               break;
+               int used_lane = label_lane[j];
+               if(used_lane >= 0 && used_lane < valid_rows)
+                  used_lanes[used_lane] = true;
             }
-            draw_labels[j] = false;
          }
+         int free_lane = 0;
+         while(free_lane < valid_rows && used_lanes[free_lane])
+            free_lane++;
+         label_lane[i] = free_lane;
       }
    }
 
@@ -1389,20 +1376,20 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          // Text label next to the line
          string flip_txt = flip_name + "_TXT";
          ObjectDelete(0, flip_txt);
-         datetime flip_txt_time = time_end - 900;
+         datetime flip_txt_time = time_start + 1200;
          if(ObjectCreate(0, flip_txt, OBJ_TEXT, 0, flip_txt_time, chart_gamma_flip))
          {
             ObjectSetString(0, flip_txt, OBJPROP_TEXT, "Zero Gamma");
             ObjectSetInteger(0, flip_txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorZeroGamma, session_age, 65));
             ObjectSetInteger(0, flip_txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, flip_txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);
+            ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
             ObjectSetInteger(0, flip_txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, flip_txt, OBJPROP_HIDDEN, true);
          }
       }
    }
-   datetime label_time = time_end - 900;
+   datetime label_time = time_start + 1200;
    for(int i = 0; i < valid_rows; i++)
    {
       if(!draw_rows[i])
@@ -1522,14 +1509,16 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       int ag_pct = (int)MathRound(label_ag_ratio * 100.0);
       string text_obj_name = obj_name + "_TXT";
       ObjectDelete(0, text_obj_name);
-      datetime row_label_time = (datetime)MathMin((double)(gex_line_end + 300), (double)(time_end - 300));
-      ENUM_ANCHOR_POINT row_label_anchor = ANCHOR_LEFT_LOWER;
-      if(gex_ratio >= 0.78)
-      {
-         row_label_time = time_end - 300;
-         row_label_anchor = ANCHOR_RIGHT_LOWER;
-      }
-      if(draw_labels[i] && ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, row_label_time, chart_price))
+      int label_quadrant = label_lane[i] % 4;
+      bool label_on_right = (label_quadrant >= 2);
+      bool label_above_line = ((label_quadrant % 2) == 0);
+      datetime row_label_time = label_on_right ? (time_end - 1200) : (time_start + 1200);
+      ENUM_ANCHOR_POINT row_label_anchor;
+      if(label_on_right)
+         row_label_anchor = label_above_line ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER;
+      else
+         row_label_anchor = label_above_line ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER;
+      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, row_label_time, chart_price))
       {
          string sign = (gex >= 0) ? "+" : "";
          string text_val = StringFormat("%sGEX %s%s (%d%%) | AG (%d%%)", 
@@ -1567,7 +1556,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDCall, session_age, 65));
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
-            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, txt, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
@@ -1595,7 +1585,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDPut, session_age, 65));
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
-            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
+            ObjectSetInteger(0, txt, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
