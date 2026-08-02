@@ -25,6 +25,7 @@ try:
         week_start_for,
         write_analysis_payload,
     )
+    from .analysis_workflow import AnalysisWorkflowError, build_analysis_context
     from .indicator_levels_store import (
         DEFAULT_INDICATOR_LEVELS_DIR,
         IndicatorLevelsError,
@@ -39,6 +40,7 @@ except ImportError:  # Direct execution: python Dashboard/run_dashboard.py
         week_start_for,
         write_analysis_payload,
     )
+    from analysis_workflow import AnalysisWorkflowError, build_analysis_context
     from indicator_levels_store import (
         DEFAULT_INDICATOR_LEVELS_DIR,
         IndicatorLevelsError,
@@ -415,6 +417,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.handle_get_data(parsed_url.query)
         elif path == '/api/analysis':
             self.handle_get_analysis(parsed_url.query)
+        elif path == '/api/analysis-context':
+            self.handle_get_analysis_context(parsed_url.query)
         elif path == '/api/indicator-levels':
             self.handle_get_indicator_levels(parsed_url.query)
         elif path == '/api/status':
@@ -919,6 +923,64 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         self.send_json(200, payload)
+
+    def handle_get_analysis_context(self, query_str):
+        params = parse_qs(query_str)
+        currency = params.get("currency", [None])[0]
+        selected_date = params.get("date", [None])[0]
+
+        if currency is None or currency.upper() not in SUPPORTED_CURRENCIES:
+            self.send_error_json(
+                400,
+                "INVALID_CURRENCY",
+                f"Unsupported currency: {currency}",
+            )
+            return
+        currency = currency.upper()
+        if selected_date is None:
+            self.send_error_json(
+                400,
+                "ANALYSIS_CONTEXT_DATE_REQUIRED",
+                "Analysis-context date is required",
+            )
+            return
+        try:
+            datetime.date.fromisoformat(selected_date)
+        except ValueError:
+            self.send_error_json(
+                400,
+                "INVALID_DATE",
+                f"Invalid date format: {selected_date}",
+            )
+            return
+
+        try:
+            context = build_analysis_context(
+                INDICATOR_LEVELS_DIR,
+                currency,
+                selected_date,
+            )
+        except FileNotFoundError:
+            self.send_error_json(
+                404,
+                "ANALYSIS_CONTEXT_NOT_FOUND",
+                f"No MT5 analysis context for {currency} on {selected_date}",
+            )
+            return
+        except (IndicatorLevelsError, AnalysisWorkflowError) as exc:
+            self.log_error(
+                "[request_id=%s] Invalid analysis context: %s",
+                self.request_id,
+                exc,
+            )
+            self.send_error_json(
+                500,
+                "INVALID_ANALYSIS_CONTEXT",
+                "Unable to build a safe MT5 analysis context",
+            )
+            return
+
+        self.send_json(200, context)
 
     def handle_get_status(self):
         try:

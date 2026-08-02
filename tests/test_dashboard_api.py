@@ -8,6 +8,8 @@ import urllib.request
 import pytest
 
 from Dashboard import run_dashboard
+from Dashboard.indicator_levels_store import manifest_filename
+from tests.test_indicator_levels_store import valid_manifest
 
 
 @pytest.fixture
@@ -270,3 +272,36 @@ def test_indicator_levels_api_returns_only_exact_mt5_manifest(dashboard_server):
     missing = json.loads(exc_info.value.read().decode("utf-8"))
     assert exc_info.value.code == 404
     assert missing["error"]["code"] == "INDICATOR_LEVELS_NOT_FOUND"
+
+
+def test_analysis_context_api_builds_exact_expiry_safe_contract(dashboard_server):
+    base_url, data_dir = dashboard_server
+    manifest_dir = data_dir / "indicator-levels"
+    manifest_dir.mkdir()
+    report_date = datetime.date.today().isoformat()
+    payload = valid_manifest("EUR", report_date)
+    payload["generated_at"] = f"{report_date}T09:00:00+03:00"
+    (manifest_dir / manifest_filename("EUR", report_date)).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with urllib.request.urlopen(
+        f"{base_url}/api/analysis-context?currency=EUR&date={report_date}"
+    ) as response:
+        context = json.loads(response.read().decode("utf-8"))
+
+    assert context["asset"] == "EUR"
+    assert context["report_date"] == report_date
+    assert context["quality_gate"]["report_mode"] == "full"
+    assert context["indicator_levels"]["coordinate_system"] == "MT5_SPOT"
+    assert len(context["context_id"]) == 64
+
+    missing_date = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(
+            f"{base_url}/api/analysis-context?currency=EUR&date={missing_date}"
+        )
+    missing = json.loads(exc_info.value.read().decode("utf-8"))
+    assert exc_info.value.code == 404
+    assert missing["error"]["code"] == "ANALYSIS_CONTEXT_NOT_FOUND"
