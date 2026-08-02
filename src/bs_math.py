@@ -48,20 +48,34 @@ def implied_volatility(price, S, K, T, r, option_type='C'):
 
 def calculate_gex(gamma, open_interest, contract_size, S):
     """
-    Calculates Gamma Exposure (GEX) for a single strike.
-    Keep this in raw per-point contract units. Display scaling belongs in the
-    chart label formatter, not in the data used for ranking/filtering levels.
+    Dollar gamma exposure for a 1% move in the underlying.
+
+    The S^2 * 1% normalization makes values comparable across strikes and
+    assets while retaining the contract multiplier and open interest.
     """
+    if gamma <= 0.0 or open_interest <= 0.0 or contract_size <= 0.0 or S <= 0.0:
+        return 0.0
+    return gamma * open_interest * contract_size * S * S * 0.01
+
+def calculate_absolute_gamma(gamma, open_interest, contract_size=1.0):
+    """
+    Absolute contract gamma across open interest and contract multiplier.
+    """
+    if gamma <= 0.0 or open_interest <= 0.0 or contract_size <= 0.0:
+        return 0.0
     return gamma * open_interest * contract_size
 
-def calculate_absolute_gamma(gamma, open_interest):
-    """
-    Calculates Absolute Gamma.
-    Keep raw gamma-open-interest units for stable relative comparisons.
-    """
-    return gamma * open_interest
-
-def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0):
+def find_gamma_flip(
+    strikes,
+    ois,
+    is_calls,
+    ivs,
+    spot,
+    T=0.08,
+    r=0.0,
+    times=None,
+    multipliers=None,
+):
     """
     Finds the Spot price S where net GEX is zero.
     Expects arrays/lists of:
@@ -69,65 +83,101 @@ def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0):
       - ois (Open Interest)
       - is_calls (boolean list where True = Call, False = Put)
       - ivs (Implied Volatilities)
+      - times (optional per-row years-to-expiry; scalar T is the fallback)
+      - multipliers (optional per-row contract sizes)
+
+    Returns None when the aggregate gamma does not cross zero in the search
+    range. A minimum-magnitude grid point is not a valid zero-gamma level.
     """
+    lengths = {len(strikes), len(ois), len(is_calls), len(ivs)}
+    if len(lengths) != 1 or not strikes or spot <= 0.0:
+        return None
+    if times is None:
+        row_times = [T] * len(strikes)
+    else:
+        if len(times) != len(strikes):
+            raise ValueError("times must have the same length as strikes")
+        row_times = times
+    if multipliers is None:
+        row_multipliers = [1.0] * len(strikes)
+    else:
+        if len(multipliers) != len(strikes):
+            raise ValueError("multipliers must have the same length as strikes")
+        row_multipliers = multipliers
+
+    strike_values = np.asarray(strikes, dtype=float)
+    oi_values = np.asarray(ois, dtype=float)
+    iv_values = np.asarray(ivs, dtype=float)
+    time_values = np.asarray(row_times, dtype=float)
+    multiplier_values = np.asarray(row_multipliers, dtype=float)
+    sign_values = np.where(np.asarray(is_calls, dtype=bool), 1.0, -1.0)
+    valid_rows = (
+        (strike_values > 0.0)
+        & (oi_values > 0.0)
+        & (iv_values > 0.001)
+        & (time_values > 0.0)
+        & (multiplier_values > 0.0)
+        & np.isfinite(strike_values)
+        & np.isfinite(oi_values)
+        & np.isfinite(iv_values)
+        & np.isfinite(time_values)
+        & np.isfinite(multiplier_values)
+    )
+    if not valid_rows.any() or not (sign_values[valid_rows] > 0).any() or not (sign_values[valid_rows] < 0).any():
+        return None
+    strike_values = strike_values[valid_rows]
+    oi_values = oi_values[valid_rows]
+    iv_values = iv_values[valid_rows]
+    time_values = time_values[valid_rows]
+    multiplier_values = multiplier_values[valid_rows]
+    sign_values = sign_values[valid_rows]
+
     def net_gamma_func(S):
         if S <= 0:
-            return 0.0
-        val = 0.0
-        for K, oi, is_call, iv in zip(strikes, ois, is_calls, ivs):
-            if iv <= 0.001 or oi <= 0:
-                continue
-            d1 = (np.log(S / K) + (r + 0.5 * iv**2) * T) / (iv * np.sqrt(T))
-            g = norm.pdf(d1) / (S * iv * np.sqrt(T))
-            if is_call:
-                val += g * oi
-            else:
-                val -= g * oi
-        return val
+            return np.nan
+        sqrt_time = np.sqrt(time_values)
+        d1 = (
+            np.log(S / strike_values)
+            + (r + 0.5 * iv_values**2) * time_values
+        ) / (iv_values * sqrt_time)
+        gamma_values = norm.pdf(d1) / (S * iv_values * sqrt_time)
+        return float(
+            np.sum(gamma_values * oi_values * multiplier_values * sign_values)
+        )
 
-    # Step 1: Search in a narrow, safe range where underflow doesn't occur [0.85 * spot, 1.15 * spot]
-    lower_bound = 0.85 * spot
-    upper_bound = 1.15 * spot
-    
-    try:
-        f_low = net_gamma_func(lower_bound)
-        f_high = net_gamma_func(upper_bound)
-        if f_low * f_high < 0:
-            return brentq(net_gamma_func, lower_bound, upper_bound)
-    except Exception:
-        pass
+    grid = np.linspace(0.5 * spot, 1.5 * spot, 401)
+    vals = np.asarray([net_gamma_func(x) for x in grid], dtype=float)
+    finite = np.isfinite(vals)
+    if not finite.any():
+        return None
+    max_val = float(np.max(np.abs(vals[finite])))
+    if max_val <= 0.0:
+        return None
+    threshold = max_val * 1e-10
 
-    # Step 2: Try a slightly wider range [0.7 * spot, 1.3 * spot]
-    try:
-        f_low = net_gamma_func(0.7 * spot)
-        f_high = net_gamma_func(1.3 * spot)
-        if f_low * f_high < 0:
-            return brentq(net_gamma_func, 0.7 * spot, 1.3 * spot)
-    except Exception:
-        pass
-
-    # Step 3: Scan grid [0.5 * spot, 1.5 * spot] to locate the sign change
-    grid = np.linspace(0.5 * spot, 1.5 * spot, 100)
-    vals = []
-    for x in grid:
-        try:
-            vals.append(net_gamma_func(x))
-        except Exception:
-            vals.append(0.0)
-            
-    # Find sign changes but verify they are not due to underflow
-    max_val = max(abs(v) for v in vals) if vals else 1.0
-    threshold = 1e-8 * max_val
-    
+    roots = []
     for i in range(len(grid) - 1):
-        if vals[i] * vals[i+1] <= 0:
-            # Check if it's not just underflow (both values extremely close to 0)
-            if abs(vals[i]) > threshold or abs(vals[i+1]) > threshold:
-                try:
-                    return brentq(net_gamma_func, grid[i], grid[i+1])
-                except Exception:
-                    return 0.5 * (grid[i] + grid[i+1])
-                
-    # Fallback: grid point closest to zero
-    best_idx = np.argmin(np.abs(vals))
-    return grid[best_idx]
+        left, right = vals[i], vals[i + 1]
+        if not np.isfinite(left) or not np.isfinite(right):
+            continue
+        if abs(left) <= threshold and abs(right) <= threshold:
+            continue
+        if left == 0.0:
+            previous = vals[i - 1] if i > 0 else np.nan
+            if (
+                np.isfinite(previous)
+                and abs(previous) > threshold
+                and abs(right) > threshold
+                and previous * right < 0.0
+            ):
+                roots.append(float(grid[i]))
+            continue
+        if left * right < 0.0:
+            try:
+                roots.append(float(brentq(net_gamma_func, grid[i], grid[i + 1])))
+            except (ValueError, RuntimeError):
+                continue
+
+    if not roots:
+        return None
+    return min(roots, key=lambda value: abs(value - spot))

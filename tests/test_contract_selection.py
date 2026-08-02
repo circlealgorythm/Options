@@ -2,8 +2,22 @@ import datetime
 import os
 
 import pandas as pd
+import pytest
 
-from main import copy_csv_to_mt5, convert_cad_options_to_usdcad, detect_spot_and_classify, estimate_atm_iv, resolve_session_date, select_daily_contracts, select_iv_month, select_near_spot_mdd_settle, validate_mdd_summary
+import main as main_module
+
+from main import (
+    copy_csv_to_mt5,
+    convert_cad_options_to_usdcad,
+    detect_spot_and_classify,
+    estimate_atm_iv,
+    resolve_atm_iv_reference,
+    resolve_session_date,
+    select_daily_contracts,
+    select_iv_month,
+    select_near_spot_mdd_settle,
+    validate_mdd_summary,
+)
 from src.parser import month_code_from_yyyymm00, parse_bulletin_date_from_text
 
 
@@ -37,6 +51,38 @@ def test_resolve_session_date_uses_publish_date_only_after_current_bulletin(tmp_
     current_ts = datetime.datetime(2026, 6, 25, 7, 29).timestamp()
     os.utime(pdf_path, (current_ts, current_ts))
     assert resolve_session_date(pdf_path, bulletin_date, today) == today
+
+
+def test_resolve_session_date_weekend_and_monday_mapping(tmp_path):
+    pdf_path = tmp_path / "bulletin.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    # Case 1: Run on Monday (2026-06-29) with Friday's bulletin (2026-06-26)
+    today = datetime.date(2026, 6, 29)
+    bulletin_date = datetime.date(2026, 6, 26)
+    # File modification time is Saturday morning (2026-06-27)
+    publish_ts = datetime.datetime(2026, 6, 27, 8, 0).timestamp()
+    os.utime(pdf_path, (publish_ts, publish_ts))
+    assert resolve_session_date(pdf_path, bulletin_date, today) == datetime.date(2026, 6, 29)
+
+    # Case 2: Run on Saturday (2026-06-27) with Friday's bulletin (2026-06-26)
+    today_sat = datetime.date(2026, 6, 27)
+    assert resolve_session_date(pdf_path, bulletin_date, today_sat) == datetime.date(2026, 6, 29)
+
+    # Case 3: Run on Friday (2026-06-26) with Thursday's bulletin (2026-06-25)
+    today_fri = datetime.date(2026, 6, 26)
+    bulletin_date_thu = datetime.date(2026, 6, 25)
+    publish_ts_fri = datetime.datetime(2026, 6, 26, 8, 0).timestamp()
+    os.utime(pdf_path, (publish_ts_fri, publish_ts_fri))
+    assert resolve_session_date(pdf_path, bulletin_date_thu, today_fri) == datetime.date(2026, 6, 26)
+
+    # Case 4: Run on Monday (2026-07-06) with Thursday's bulletin (2026-07-02) due to Friday holiday
+    today_mon_holiday = datetime.date(2026, 7, 6)
+    bulletin_date_thu_holiday = datetime.date(2026, 7, 2)
+    publish_ts_holiday = datetime.datetime(2026, 7, 3, 8, 0).timestamp()
+    os.utime(pdf_path, (publish_ts_holiday, publish_ts_holiday))
+    assert resolve_session_date(pdf_path, bulletin_date_thu_holiday, today_mon_holiday) == datetime.date(2026, 7, 6)
+
 
 
 def test_eur_friday_falls_back_to_weekly_before_other_daily_codes():
@@ -175,7 +221,7 @@ def test_daily_mdd_selects_nearest_put_below_spot_instead_of_max_oi():
     assert selected.iloc[0]["Put_Settle"] == 0.0051
 
 
-def test_nas_daily_mdd_keeps_call_and_put_in_same_near_month():
+def test_nas_daily_mdd_rejects_call_and_put_from_different_expiries():
     calc_df = make_rows(
         [
             ("QWW", "JUN26", 29700.0, 100, 0, 72, 0, 211.0, 0.0),
@@ -186,9 +232,7 @@ def test_nas_daily_mdd_keeps_call_and_put_in_same_near_month():
 
     selected = select_daily_contracts(calc_df, "NAS", datetime.date(2026, 6, 24))
 
-    assert set(selected["Contract_Month"]) == {"JUN26"}
-    assert (selected["Call_OI"] > 0).any()
-    assert (selected["Put_OI"] > 0).any()
+    assert selected.empty
 
 
 def test_nas_daily_mdd_prefers_same_mid_code_put_when_parser_has_it():
@@ -275,6 +319,103 @@ def test_xau_spot_detection_uses_same_series_and_positive_oi():
     assert abs(spot - 4149.4) < 0.2
 
 
+def test_observed_spot_is_not_rejected_by_a_stale_static_fallback():
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.60, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.60, "Settle": 0.01, "OI": 100, "Is_Call": False},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.62, "Settle": 0.01, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.62, "Settle": 0.02, "OI": 100, "Is_Call": False},
+        ]
+    )
+
+    spot, _, _, diagnostics = detect_spot_and_classify(
+        raw_df, "EUR", include_diagnostics=True
+    )
+
+    assert spot == pytest.approx(1.61)
+    assert diagnostics["global_source"] == "PUT_CALL_PARITY"
+    assert diagnostics["fallback_details"] == {}
+
+
+def test_outlier_contract_month_uses_observed_global_reference():
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.01, "OI": 100, "Is_Call": False},
+            {"Option_Type": "EUU", "Contract_Month": "DEC26", "Strike": 1.60, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "DEC26", "Strike": 1.60, "Settle": 0.01, "OI": 100, "Is_Call": False},
+        ]
+    )
+
+    spot, spots, _, diagnostics = detect_spot_and_classify(
+        raw_df, "EUR", include_diagnostics=True
+    )
+
+    assert spot == pytest.approx(1.16)
+    assert spots["DEC26"] == pytest.approx(spot)
+    assert diagnostics["fallback_details"]["DEC26"].startswith(
+        "GLOBAL_REFERENCE_OUTLIER"
+    )
+
+
+def test_spot_reference_prefers_parity_over_a_nearer_cluster_estimate():
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "EUU", "Contract_Month": "JUL26", "Strike": 1.14, "Settle": 0.01, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.01, "OI": 100, "Is_Call": False},
+        ]
+    )
+
+    spot, _, _, diagnostics = detect_spot_and_classify(
+        raw_df, "EUR", include_diagnostics=True
+    )
+
+    assert spot == pytest.approx(1.16)
+    assert diagnostics["reference_month"] == "AUG26"
+    assert diagnostics["global_source"] == "PUT_CALL_PARITY"
+
+
+def test_mixed_eur_rows_are_classified_by_parity_and_delta():
+    raw_df = pd.DataFrame(
+        [
+            {"Strike": 1.1300, "Settle": 0.0255, "Delta": 0.95, "OI": 10, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            {"Strike": 1.1300, "Settle": 0.0005, "Delta": 0.05, "OI": 100, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            # Duplicate text-layer row with point-change misread as delta.
+            {"Strike": 1.1300, "Settle": 0.0255000000001, "Delta": 0.0077, "OI": 10, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            {"Strike": 1.1700, "Settle": 0.0010, "Delta": 0.20, "OI": 80, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            {"Strike": 1.1700, "Settle": 0.0160, "Delta": 0.80, "OI": 20, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+        ]
+    )
+
+    spot, spots_per_month, classified = detect_spot_and_classify(raw_df, "EUR")
+
+    assert len(classified) == 4
+    assert spot == pytest.approx(1.1550, abs=1e-6)
+    assert spots_per_month["AUG26"] == pytest.approx(1.1550, abs=1e-6)
+    low_strike = classified[classified["Strike"] == 1.1300].sort_values("Settle")
+    high_strike = classified[classified["Strike"] == 1.1700].sort_values("Settle")
+    assert low_strike["Is_Call"].tolist() == [False, True]
+    assert high_strike["Is_Call"].tolist() == [True, False]
+
+
+def test_expiry_day_intrinsic_rows_infer_forward_without_premium_pairs():
+    raw_df = pd.DataFrame(
+        [
+            {"Strike": 1.1400, "Settle": 0.0142, "Delta": 1.0, "OI": 10, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+            {"Strike": 1.1450, "Settle": 0.0092, "Delta": 1.0, "OI": 20, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+            {"Strike": 1.1500, "Settle": 0.0042, "Delta": 1.0, "OI": 30, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+            {"Strike": 1.1600, "Settle": 0.0058, "Delta": 1.0, "OI": 40, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+        ]
+    )
+
+    spot, _, classified = detect_spot_and_classify(raw_df, "EUR")
+
+    assert spot == pytest.approx(1.1542, abs=1e-6)
+    assert classified.sort_values("Strike")["Is_Call"].tolist() == [True, True, True, False]
+
+
 def test_atm_iv_estimate_prefers_liquid_near_atm_series():
     # Same ATM area, but the low-OI put has an inflated settlement mark. The
     # range calculation should follow the liquid monthly series instead.
@@ -307,6 +448,44 @@ def test_atm_iv_estimate_uses_nearest_strikes_not_wide_smile_window():
     iv_atm = estimate_atm_iv(option_df, "EUR", 1.1400, 7.0 / 252.0, 0.0, 0.02)
 
     assert 0.04 < iv_atm < 0.07
+
+
+def test_atm_iv_static_fallback_has_explicit_diagnostics():
+    empty = pd.DataFrame(columns=["Strike", "Settle", "OI", "Is_Call"])
+
+    iv, diagnostics = resolve_atm_iv_reference(
+        empty, "EUR", 1.14, 7.0 / 252.0, 0.0, 0.02
+    )
+
+    assert iv == 0.07
+    assert diagnostics["source"] == "STATIC_FALLBACK"
+    assert diagnostics["fallback_reason"] == "NO_VALID_OPTION_ROWS"
+
+
+def test_pipeline_excludes_expired_rows_and_marks_static_iv_degraded(
+    tmp_path, monkeypatch
+):
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "BTC", "Contract_Month": "JUL26", "Strike": 100000.0, "Settle": 0.01, "OI": 10, "Is_Call": True},
+            {"Option_Type": "BTC", "Contract_Month": "JUL26", "Strike": 100000.0, "Settle": 0.01, "OI": 10, "Is_Call": False},
+            {"Option_Type": "BTC", "Contract_Month": "AUG26", "Strike": 63000.0, "Settle": 0.01, "OI": 10, "Is_Call": True},
+            {"Option_Type": "BTC", "Contract_Month": "AUG26", "Strike": 63000.0, "Settle": 0.01, "OI": 10, "Is_Call": False},
+        ]
+    )
+    monkeypatch.setattr(main_module, "copy_csv_to_mt5", lambda *_args, **_kwargs: None)
+
+    main_module.calculate_gex_pipeline(
+        raw_df, "BTC", str(tmp_path), datetime.date(2026, 8, 3)
+    )
+
+    output = pd.read_csv(tmp_path / "GEX_BTCUSD_2026-08-03.csv")
+    metadata = output.iloc[0]
+    assert metadata["Futures_Spot"] == pytest.approx(63000.0)
+    assert metadata["Excluded_Expired_Rows"] == 2
+    assert metadata["IV_Source"] == "STATIC_FALLBACK"
+    assert metadata["Quality_Status"] == "DEGRADED"
+    assert "IV_STATIC_FALLBACK" in metadata["Quality_Reasons"]
 
 
 def test_iv_month_rollover_skips_all_near_expiry_months():

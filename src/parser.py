@@ -101,6 +101,74 @@ def extract_oi(parts):
             return int(cleaned)
     return 0
 
+
+def extract_delta(parts, settle_idx):
+    """Extract delta after the settlement-change field in a bulletin row."""
+    if settle_idx < 0 or settle_idx + 1 >= len(parts):
+        return 0.0
+
+    cursor = settle_idx + 1
+    if parts[cursor] in {"+", "-"}:
+        # Some text layers split a point change into sign and magnitude.
+        cursor += 2
+    else:
+        # Native rows use an integer change; decimal-quote duplicate pages use
+        # a signed decimal. Neither field is delta.
+        cursor += 1
+
+    for delta_token in parts[cursor:cursor + 2]:
+        clean_delta = re.sub(r'[AB+\-*]', '', delta_token)
+        if '.' not in clean_delta:
+            continue
+        try:
+            candidate_delta = float(clean_delta)
+        except ValueError:
+            continue
+        if 0.0 <= candidate_delta <= 1.0:
+            return candidate_delta
+    return 0.0
+
+
+def canonicalize_option_header_code(currency, option_code, header_line):
+    """Preserve week identity when a bulletin alias exposes it in the title."""
+    code = str(option_code or "").upper()
+    if str(currency or "").upper() != "XAU":
+        return code
+
+    match = re.search(r"\bWEEK\s*([1-5])\b", str(header_line or "").upper())
+    if not match:
+        return code
+    week = match.group(1)
+    standard_suffixes = {"GMW": "M", "GWT": "T", "GWW": "W", "GWR": "R"}
+    if code in standard_suffixes:
+        return f"G{week}{standard_suffixes[code]}"
+    if code == "MMG":
+        return f"{week}MG"
+    if code == "FMG":
+        return f"{week}FG"
+    return code
+
+
+def infer_nas_option_type_after_total(
+    currency, current_option_type, is_call_state, previous_table_total, parts
+):
+    """Recover the unlabeled quarterly-put transition in Section 40.
+
+    CME's Nasdaq bulletin switches from the QN4 put table to the quarterly
+    E-mini put table with only a bare contract-month row after ``TOTAL``.
+    Without this transition, all subsequent quarterly puts inherit QN4.
+    """
+    if not (
+        str(currency or "").upper() in {"NAS", "NQ"}
+        and current_option_type == "QN4"
+        and is_call_state is False
+        and previous_table_total
+        and len(parts) == 1
+        and re.match(r"^[A-Z]{3}\d{2}$", parts[0].upper())
+    ):
+        return current_option_type
+    return "EMINI"
+
 def parse_bulletin_date_from_text(text: str):
     match = re.search(r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\b', text)
     if not match:
@@ -143,6 +211,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
     current_contract_month = "UNKNOWN"
     current_option_type = "UNKNOWN"
     is_call_state = is_call_only
+    previous_table_total = False
     
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -169,6 +238,18 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     line_upper = line.upper()
                     if "BULLETIN" in line_upper:
                         continue
+
+                    if parts[0].upper() in {"TOTAL", "TOTALS"}:
+                        previous_table_total = True
+                        continue
+
+                    current_option_type = infer_nas_option_type_after_total(
+                        currency,
+                        current_option_type,
+                        is_call_state,
+                        previous_table_total,
+                        parts,
+                    )
 
                     # NASDAQ MID tables are split into a month-code call block
                     # (e.g. "JUN26 QWW MID") and a numeric-date put block
@@ -198,6 +279,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                     
                     if is_header:
                         # Extract option code from header (handle parent-child codes e.g. GBU OPT - 2BP)
+                        option_code = ""
                         header_line_clean = re.sub(r'\(.*?\)', '', line)
                         if "-" in header_line_clean:
                             sub_parts = header_line_clean.split("-")
@@ -229,6 +311,10 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                                 option_code = re.sub(r'[^A-Z0-9]', '', token_to_check.upper())
                             else:
                                 option_code = ""
+
+                        option_code = canonicalize_option_header_code(
+                            currency, option_code, header_line_clean
+                        )
                         
                         if (2 <= len(option_code) <= 5) and not option_code.startswith("PG") and option_code not in ["FOR", "TOTAL", "RTO"] and not re.match(r'^[A-Z]{3}\d{2}$', option_code):
                             current_option_type = option_code
@@ -244,16 +330,21 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                             is_call_state = True
                         elif parts[-1].upper() == 'P':
                             is_call_state = False
+
+                        previous_table_total = False
                             
                     if "EXPIRATION" not in line_upper:
                         for p in parts:
                             if re.match(r'^[A-Z]{3}\d{2}$', p):
                                 current_contract_month = p
+                                previous_table_total = False
                                 break
                     continue
                     
                 if len(parts) < 8:
                     continue
+
+                previous_table_total = False
                     
                 strike_raw = parts[0]
                 strike = float(strike_raw)
@@ -310,21 +401,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 oi = extract_oi(parts)
                 
                 # Robust Delta Extraction
-                delta = 0.0
-                if settle_idx != -1:
-                    delta_col = settle_idx + (1 if is_glued else 2)
-                    if delta_col < len(parts):
-                        delta_token = parts[delta_col]
-                        if delta_token != "----" and any(c.isdigit() for c in delta_token):
-                            clean_delta = re.sub(r'[AB]', '', delta_token)
-                            try:
-                                delta = float(clean_delta)
-                                if delta > 100.0:
-                                    delta /= 10000.0
-                                elif delta > 1.0:
-                                    delta /= 100.0
-                            except:
-                                delta = 0.0
+                delta = extract_delta(parts, settle_idx)
                                 
                 data.append({
                     "Strike": strike,

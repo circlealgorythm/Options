@@ -27,3 +27,47 @@ def test_gamma_flip_call_dominated():
     flip_price = find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0)
     assert isinstance(flip_price, float)
     assert flip_price > 0.0
+
+
+def test_gamma_flip_returns_none_without_a_sign_crossing():
+    flip_price = find_gamma_flip(
+        strikes=[90.0, 100.0, 110.0],
+        ois=[1000, 2000, 1500],
+        is_calls=[True, True, True],
+        ivs=[0.2, 0.2, 0.2],
+        spot=100.0,
+        T=0.08,
+    )
+
+    assert flip_price is None
+
+
+def test_gamma_flip_uses_each_rows_expiry():
+    flip_price = find_gamma_flip(
+        strikes=[95.0, 100.0, 105.0, 110.0],
+        ois=[4500, 1500, 3500, 900],
+        is_calls=[False, False, True, True],
+        ivs=[0.18, 0.22, 0.16, 0.25],
+        spot=100.0,
+        times=[5 / 252, 60 / 252, 5 / 252, 60 / 252],
+    )
+
+    assert flip_price == pytest.approx(100.4621641126, abs=1e-6)
+
+
+def test_gamma_flip_weights_mixed_contract_sizes():
+    common = dict(
+        strikes=[95.0, 105.0],
+        ois=[1000, 1000],
+        is_calls=[False, True],
+        ivs=[0.2, 0.2],
+        spot=100.0,
+        T=0.08,
+    )
+
+    equal_size = find_gamma_flip(**common)
+    mixed_size = find_gamma_flip(**common, multipliers=[10.0, 100.0])
+
+    assert equal_size is not None
+    assert mixed_size is not None
+    assert mixed_size < equal_size - 5.0

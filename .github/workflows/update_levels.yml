@@ -1,22 +1,29 @@
-name: Update CME Levels Daily
+name: Test and Update CME Levels
 
 on:
+  push:
+  pull_request:
   schedule:
     - cron: '30 5 * * 1-5' # Runs at 05:30 UTC Monday-Friday (08:30 MSK)
   workflow_dispatch: # Allows manual trigger
 
+concurrency:
+  group: cme-levels-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+
 jobs:
-  run-pipeline:
+  tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -26,18 +33,40 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run regression tests
-        run: |
-          pytest -q tests
+        run: python -m pytest -q
+
+  update-levels:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Run CME Parsing and Math Pipeline
-        run: |
-          python main.py
+        run: python main.py
 
       - name: Commit and push generated CSV data
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update CME Levels [skip ci]" && git push)
+          git add -f data/*.csv
+          if ! git diff --staged --quiet; then
+            git commit -m "Update CME Levels [skip ci]"
+            git push
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

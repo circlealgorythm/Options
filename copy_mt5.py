@@ -9,15 +9,18 @@ source_mq5 = r'C:\Users\circlealgorythm\.antigravity\bot_grid\CME_GEX_Levels_Ind
 source_ex5 = r'C:\Users\circlealgorythm\.antigravity\bot_grid\CME_GEX_Levels_Indicator.ex5'
 
 if os.path.exists(mt5_dir):
-    for folder in os.listdir(mt5_dir):
-        indicators_dir = os.path.join(mt5_dir, folder, 'MQL5', 'Indicators')
-        if os.path.isdir(indicators_dir):
-            try:
-                shutil.copy2(source_mq5, indicators_dir)
-                shutil.copy2(source_ex5, indicators_dir)
-                print(f"Copied files to {indicators_dir}")
-            except Exception as e:
-                print(f"Error copying to {indicators_dir}: {e}")
+    try:
+        for folder in os.listdir(mt5_dir):
+            indicators_dir = os.path.join(mt5_dir, folder, 'MQL5', 'Indicators')
+            if os.path.isdir(indicators_dir):
+                try:
+                    shutil.copy2(source_mq5, indicators_dir)
+                    shutil.copy2(source_ex5, indicators_dir)
+                    print(f"Copied files to {indicators_dir}")
+                except Exception as e:
+                    print(f"Error copying to {indicators_dir}: {e}")
+    except Exception as e:
+        print(f"Error listing {mt5_dir}: {e}")
 else:
     print(f"MT5 Terminal directory not found: {mt5_dir}")
 

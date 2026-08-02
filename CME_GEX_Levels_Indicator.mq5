@@ -30,7 +30,7 @@ input string   InpGithubToken = "";                // GitHub PAT (leave empty if
 
 input group "--- Display Settings ---"
 
-input int      InpHistoryDays = 14;                // Days of history to load
+input int      InpHistoryDays = 7;                 // Days of history to load
 
 input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
 
@@ -48,7 +48,9 @@ input bool     InpUseDynamicWidth = true;          // Scale GEX line widths dyna
 
 input int      InpForwardPoints = 0;               // Forward Point (Manual Shift in points)
 
-input bool     InpAutoSpotAdjust= true;            // Auto-adjust to Spot Price (Overrides Manual)
+input bool     InpAutoSpotAdjust= true;            // Auto-adjust to Spot Price (Overrides Manual)
+
+input double   InpMaxAutoOffsetPercent = 5.0;      // Reject auto offset above this % of futures reference
 
 input color    InpColorCall   = clrMediumSeaGreen; // Positive GEX Color (Support)
 
@@ -768,7 +770,21 @@ double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_
 
 //+------------------------------------------------------------------+
 
-bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
+int FindCSVColumn(const string &header_columns[], string column_name)
+{
+   int count = ArraySize(header_columns);
+   for(int i = 0; i < count; i++)
+   {
+      string current = header_columns[i];
+      StringTrimLeft(current);
+      StringTrimRight(current);
+      if(current == column_name)
+         return i;
+   }
+   return -1;
+}
+
+bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
 {
    out_global_month = "UNKNOWN";
    string clean_csv = csv_data;
@@ -781,7 +797,28 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       Print("ParseCSV Debug Error: total_lines <= 1, aborting.");
       return false;
    }
-   if(StringFind(lines[0], "Daily_Call_Settle") < 0 || StringFind(lines[0], "Global_Call_OI") < 0)
+   string header_columns[];
+   StringSplit(lines[0], ',', header_columns);
+   int idx_strike = FindCSVColumn(header_columns, "Strike");
+   int idx_total_gex = FindCSVColumn(header_columns, "Total_GEX");
+   int idx_total_abs_gamma = FindCSVColumn(header_columns, "Total_Abs_Gamma");
+   int idx_daily_call_settle = FindCSVColumn(header_columns, "Daily_Call_Settle");
+   int idx_daily_call_oi = FindCSVColumn(header_columns, "Daily_Call_OI");
+   int idx_daily_put_settle = FindCSVColumn(header_columns, "Daily_Put_Settle");
+   int idx_daily_put_oi = FindCSVColumn(header_columns, "Daily_Put_OI");
+   int idx_global_call_oi = FindCSVColumn(header_columns, "Global_Call_OI");
+   int idx_global_put_oi = FindCSVColumn(header_columns, "Global_Put_OI");
+   int idx_r68_high = FindCSVColumn(header_columns, "R68_High");
+   int idx_r68_low = FindCSVColumn(header_columns, "R68_Low");
+   int idx_r95_high = FindCSVColumn(header_columns, "R95_High");
+   int idx_r95_low = FindCSVColumn(header_columns, "R95_Low");
+   int idx_global_month = FindCSVColumn(header_columns, "Global_Month");
+   int idx_futures_spot = FindCSVColumn(header_columns, "Futures_Spot");
+   int idx_gamma_flip = FindCSVColumn(header_columns, "Gamma_Flip");
+   if(idx_strike < 0 || idx_total_gex < 0 || idx_total_abs_gamma < 0 ||
+      idx_daily_call_settle < 0 || idx_daily_call_oi < 0 ||
+      idx_daily_put_settle < 0 || idx_daily_put_oi < 0 ||
+      idx_global_call_oi < 0 || idx_global_put_oi < 0)
    {
       Print("Unsupported CSV schema. Expected Daily MDD and Global OI columns, got: ", lines[0]);
       return false;
@@ -809,14 +846,14 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          continue;
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
-      if(total_cols < 10) // Must have at least strike, gex, abs_gamma, d_call_settle, d_call_oi, d_put_settle, d_put_oi, g_call_oi, g_put_oi
-         continue;
-      double strike = StringToDouble(columns[1]);
-      double total_gex = StringToDouble(columns[2]);
+      if(total_cols < ArraySize(header_columns))
+         continue;
+      double strike = StringToDouble(columns[idx_strike]);
+      double total_gex = StringToDouble(columns[idx_total_gex]);
       double abs_gex = MathAbs(total_gex);
       if(abs_gex > file_max_abs_gex)
          file_max_abs_gex = abs_gex;
-      double total_abs_gamma = StringToDouble(columns[3]);
+      double total_abs_gamma = StringToDouble(columns[idx_total_abs_gamma]);
       if(total_abs_gamma > max_abs_gamma)
       {
          max_abs_gamma = total_abs_gamma;
@@ -828,12 +865,12 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          gex_array[gex_count] = abs_gex;
          gex_count++;
       }
-      double d_call_settle = StringToDouble(columns[4]);
-      double d_call_oi = StringToDouble(columns[5]);
-      double d_put_settle = StringToDouble(columns[6]);
-      double d_put_oi = StringToDouble(columns[7]);
-      double g_call_oi = StringToDouble(columns[8]);
-      double g_put_oi = StringToDouble(columns[9]);
+      double d_call_settle = StringToDouble(columns[idx_daily_call_settle]);
+      double d_call_oi = StringToDouble(columns[idx_daily_call_oi]);
+      double d_put_settle = StringToDouble(columns[idx_daily_put_settle]);
+      double d_put_oi = StringToDouble(columns[idx_daily_put_oi]);
+      double g_call_oi = StringToDouble(columns[idx_global_call_oi]);
+      double g_put_oi = StringToDouble(columns[idx_global_put_oi]);
       if(d_call_oi > max_daily_call_oi && d_call_settle > 0.0)
       {
          max_daily_call_oi = d_call_oi;
@@ -899,36 +936,30 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          continue;
       string columns[];
       int total_cols = StringSplit(line, ',', columns);
-      if(total_cols < 10)
-         continue;
-      double strike = StringToDouble(columns[1]);
-      double total_gex = StringToDouble(columns[2]);
-      double total_abs_gamma = StringToDouble(columns[3]);
-      double d_call_settle = StringToDouble(columns[4]);
-      double d_call_oi = StringToDouble(columns[5]);
-      double d_put_settle = StringToDouble(columns[6]);
-      double d_put_oi = StringToDouble(columns[7]);
-      double g_call_oi = StringToDouble(columns[8]);
-      double g_put_oi = StringToDouble(columns[9]);
-      if(total_cols >= 14 && r68_high == 0.0)
-      {
-         r68_high = StringToDouble(columns[10]);
-         r68_low = StringToDouble(columns[11]);
-         r95_high = StringToDouble(columns[12]);
-         r95_low = StringToDouble(columns[13]);
-         if(total_cols >= 16)
-         {
-            out_global_month = columns[14];
-         }
-         if(total_cols >= 17)
-         {
-            futures_spot = StringToDouble(columns[16]);
-         }
-         if(total_cols >= 18)
-         {
-            gamma_flip = StringToDouble(columns[17]);
-         }
-      }
+      if(total_cols < ArraySize(header_columns))
+         continue;
+      double strike = StringToDouble(columns[idx_strike]);
+      double total_gex = StringToDouble(columns[idx_total_gex]);
+      double total_abs_gamma = StringToDouble(columns[idx_total_abs_gamma]);
+      double d_call_settle = StringToDouble(columns[idx_daily_call_settle]);
+      double d_call_oi = StringToDouble(columns[idx_daily_call_oi]);
+      double d_put_settle = StringToDouble(columns[idx_daily_put_settle]);
+      double d_put_oi = StringToDouble(columns[idx_daily_put_oi]);
+      double g_call_oi = StringToDouble(columns[idx_global_call_oi]);
+      double g_put_oi = StringToDouble(columns[idx_global_put_oi]);
+      if(idx_r68_high >= 0 && idx_r68_low >= 0 && idx_r95_high >= 0 && idx_r95_low >= 0 && r68_high == 0.0)
+      {
+         r68_high = StringToDouble(columns[idx_r68_high]);
+         r68_low = StringToDouble(columns[idx_r68_low]);
+         r95_high = StringToDouble(columns[idx_r95_high]);
+         r95_low = StringToDouble(columns[idx_r95_low]);
+         if(idx_global_month >= 0)
+            out_global_month = columns[idx_global_month];
+         if(idx_futures_spot >= 0)
+            futures_spot = StringToDouble(columns[idx_futures_spot]);
+         if(idx_gamma_flip >= 0)
+            gamma_flip = StringToDouble(columns[idx_gamma_flip]);
+      }
       // Check if this is a key level that must always be shown
       bool is_key_strike = (strike == max_daily_call_oi_strike && max_daily_call_oi > 0.0) ||
                            (strike == max_daily_put_oi_strike && max_daily_put_oi > 0.0) ||
@@ -974,10 +1005,16 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       TimeToStruct(TimeCurrent(), now_dt);
       string today_str = StringFormat("%04d-%02d-%02d", now_dt.year, now_dt.mon, now_dt.day);
       bool is_today = (date_str == today_str);
-      double spot_price = GetDailySpotReferenceWithRetry(Symbol(), time_start, is_today, shift);
-      if(spot_price > 0.0)
-      {
-         fw_offset = spot_price - futures_spot;
+      double spot_price = GetDailySpotReferenceWithRetry(Symbol(), time_start, is_today, shift);
+      if(spot_price > 0.0)
+      {
+         double candidate_offset = spot_price - futures_spot;
+         double candidate_pct = MathAbs(candidate_offset) / futures_spot * 100.0;
+         if(InpMaxAutoOffsetPercent <= 0.0 || candidate_pct <= InpMaxAutoOffsetPercent)
+            fw_offset = candidate_offset;
+         else
+            PrintFormat("Warning: Rejected implausible auto offset for %s: %.5f (%.2f%%). Keeping manual offset %.5f.",
+                        date_str, candidate_offset, candidate_pct, fw_offset);
       }
       else
       {
@@ -1304,9 +1341,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       }
       if(strike == max_daily_call_oi_strike && rows[i].daily_call_settle > 0.0)
       {
-         double settle = rows[i].daily_call_settle;
-         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
-         double mdd = chart_price + settle;
+         double settle = rows[i].daily_call_settle;
+         double mdd = chart_price + settle;
          string name = obj_name + "_DCMD";
          ObjectDelete(0, name);
          if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
@@ -1333,9 +1369,8 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       }
       if(strike == max_daily_put_oi_strike && rows[i].daily_put_settle > 0.0)
       {
-         double settle = rows[i].daily_put_settle;
-         if(g_base_currency == "GBP" && settle > 1.0) settle /= 100.0;
-         double mdd = chart_price - settle;
+         double settle = rows[i].daily_put_settle;
+         double mdd = chart_price - settle;
          string name = obj_name + "_DPMD";
          ObjectDelete(0, name);
          if(ObjectCreate(0, name, OBJ_TREND, 0, time_start, mdd, time_end, mdd))
