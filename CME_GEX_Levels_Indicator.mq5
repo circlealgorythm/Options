@@ -9,7 +9,7 @@
 
 #property link      "https://github.com/circlealgorythm/Options"
 
-#property version   "1.05"
+#property version   "1.06"
 
 #property description "Indicator to fetch CME GEX options levels and plot premium boundaries, MDD, AG, and volatility zones."
 
@@ -58,7 +58,13 @@ input color    InpColorPut    = clrCrimson;        // Negative GEX Color (Resist
 
 input color    InpColorGamma  = clrDeepSkyBlue;    // Max Absolute Gamma Color
 
-input int      InpRefreshHours= 4;                 // Refresh rate in hours
+input int      InpRefreshHours= 4;                 // Refresh rate in hours
+input bool     InpCompactLabels = true;            // Use compact labels without changing visible levels
+input bool     InpPreventLabelOverlap = true;      // Hide only colliding labels; keep every level line
+input double   InpMinLabelGapPercent = 0.12;       // Minimum vertical label gap as % of reference spot
+input bool     InpFadeHistory = true;              // Visually mute older sessions
+input int      InpZoneTintPercent = 14;            // Volatility-zone tint strength against chart background
+input bool     InpDrawDaySeparators = true;        // Draw subtle trading-day separators
 
 input group "--- Market Boundaries (1st Order) ---"
 
@@ -114,7 +120,9 @@ string         g_obj_prefix = "CMEGEX_";
 
 bool           g_show_gex = true;
 
-bool           g_show_ag  = true;
+bool           g_show_ag  = true;
+bool           g_show_zones = true;
+bool           g_show_labels = true;
 
 //+------------------------------------------------------------------+
 //| Custom indicator initialization function                         |
@@ -146,11 +154,17 @@ int OnInit()
    }
    Print("CME GEX Indicator initialized for ", g_base_currency, "USD. Loading historical levels...");
    string gv_gex = "CMEGEX_GEX_" + IntegerToString(ChartID());
-   string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
+   string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
+   string gv_zones = "CMEGEX_ZONES_" + IntegerToString(ChartID());
+   string gv_labels = "CMEGEX_LABELS_" + IntegerToString(ChartID());
    if(GlobalVariableCheck(gv_gex))
       g_show_gex = (bool)GlobalVariableGet(gv_gex);
-   if(GlobalVariableCheck(gv_ag))
-      g_show_ag = (bool)GlobalVariableGet(gv_ag);
+   if(GlobalVariableCheck(gv_ag))
+      g_show_ag = (bool)GlobalVariableGet(gv_ag);
+   if(GlobalVariableCheck(gv_zones))
+      g_show_zones = (bool)GlobalVariableGet(gv_zones);
+   if(GlobalVariableCheck(gv_labels))
+      g_show_labels = (bool)GlobalVariableGet(gv_labels);
    CreateButtons();
    EventSetTimer(3600); // Trigger timer event every hour
    bool history_desynced = false;
@@ -175,9 +189,13 @@ void OnDeinit(const int reason)
       CleanUpObjects();
       string gv_gex = "CMEGEX_GEX_" + IntegerToString(ChartID());
       string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
-      string gv_desync = "CMEGEX_Desync_" + IntegerToString(ChartID());
+      string gv_zones = "CMEGEX_ZONES_" + IntegerToString(ChartID());
+      string gv_labels = "CMEGEX_LABELS_" + IntegerToString(ChartID());
+      string gv_desync = "CMEGEX_Desync_" + IntegerToString(ChartID());
       GlobalVariableDel(gv_gex);
-      GlobalVariableDel(gv_ag);
+      GlobalVariableDel(gv_ag);
+      GlobalVariableDel(gv_zones);
+      GlobalVariableDel(gv_labels);
       GlobalVariableDel(gv_desync);
       Print("CME GEX Indicator deinitialized and objects cleaned up.");
    }
@@ -244,9 +262,25 @@ void CreateButtons()
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_XSIZE, 42);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_YSIZE, 24);
    ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_CORNER, CORNER_LEFT_LOWER);
-   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, "Btn_ShowAG", OBJPROP_HIDDEN, true);
+   ObjectCreate(0, "Btn_ShowZones", OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_XDISTANCE, 118);
+   ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_YDISTANCE, 42);
+   ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_XSIZE, 58);
+   ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_CORNER, CORNER_LEFT_LOWER);
+   ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_HIDDEN, true);
+   ObjectCreate(0, "Btn_ShowLabels", OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_XDISTANCE, 182);
+   ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_YDISTANCE, 42);
+   ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_XSIZE, 58);
+   ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_CORNER, CORNER_LEFT_LOWER);
+   ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_HIDDEN, true);
    UpdateToggleButton("Btn_ShowGEX", "GEX", g_show_gex);
-   UpdateToggleButton("Btn_ShowAG", "AG", g_show_ag);
+   UpdateToggleButton("Btn_ShowAG", "AG", g_show_ag);
+   UpdateToggleButton("Btn_ShowZones", "ZONES", g_show_zones);
+   UpdateToggleButton("Btn_ShowLabels", "TEXT", g_show_labels);
    ChartRedraw(0);
 }
 
@@ -268,7 +302,9 @@ void UpdateToggleButton(string name, string label, bool enabled)
 void DeleteButtons()
 {
    ObjectDelete(0, "Btn_ShowGEX");
-   ObjectDelete(0, "Btn_ShowAG");
+   ObjectDelete(0, "Btn_ShowAG");
+   ObjectDelete(0, "Btn_ShowZones");
+   ObjectDelete(0, "Btn_ShowLabels");
 }
 
 //+------------------------------------------------------------------+
@@ -276,7 +312,7 @@ void DeleteButtons()
 
 //+------------------------------------------------------------------+
 
-void UpdateVisibility()
+void UpdateBaseVisibility()
 {
    int total_objects = ObjectsTotal(0);
    for(int i = 0; i < total_objects; i++)
@@ -310,13 +346,64 @@ void UpdateVisibility()
 
 //+------------------------------------------------------------------+
 
-void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+void UpdateVisibility()
+{
+   UpdateBaseVisibility();
+   int total_objects = ObjectsTotal(0);
+   for(int i = 0; i < total_objects; i++)
+   {
+      string name = ObjectName(0, i);
+      if(StringSubstr(name, 0, StringLen(g_obj_prefix)) != g_obj_prefix)
+         continue;
+      bool is_status = (StringFind(name, "UpdateStatus") >= 0);
+      bool is_zone = (StringFind(name, "_R68") >= 0 || StringFind(name, "_R95") >= 0);
+      bool is_label = (StringFind(name, "_TXT") >= 0);
+      bool is_ag = (StringFind(name, "_AGL") >= 0);
+      bool is_protected_level = (is_zone || StringFind(name, "CMD") >= 0 || StringFind(name, "PMD") >= 0 || StringFind(name, "ZeroGamma") >= 0);
+      bool is_visible = true;
+      if(!is_status)
+      {
+         if(is_zone)
+            is_visible = g_show_zones;
+         else if(is_ag)
+            is_visible = g_show_ag;
+         else if(!is_protected_level)
+            is_visible = g_show_gex;
+         if(is_label && !g_show_labels)
+            is_visible = false;
+      }
+      ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, is_visible ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
+   }
+   ChartRedraw(0);
+}
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
    if(id == CHARTEVENT_OBJECT_CLICK)
    {
       string gv_gex = "CMEGEX_GEX_" + IntegerToString(ChartID());
       string gv_ag  = "CMEGEX_AG_" + IntegerToString(ChartID());
-      if(sparam == "Btn_ShowGEX")
+      string gv_zones = "CMEGEX_ZONES_" + IntegerToString(ChartID());
+      string gv_labels = "CMEGEX_LABELS_" + IntegerToString(ChartID());
+      if(sparam == "Btn_ShowZones")
+      {
+         g_show_zones = !g_show_zones;
+         GlobalVariableSet(gv_zones, g_show_zones);
+         UpdateToggleButton("Btn_ShowZones", "ZONES", g_show_zones);
+         UpdateVisibility();
+         ObjectSetInteger(0, "Btn_ShowZones", OBJPROP_STATE, false);
+         return;
+      }
+      if(sparam == "Btn_ShowLabels")
+      {
+         g_show_labels = !g_show_labels;
+         GlobalVariableSet(gv_labels, g_show_labels);
+         UpdateToggleButton("Btn_ShowLabels", "TEXT", g_show_labels);
+         UpdateVisibility();
+         ObjectSetInteger(0, "Btn_ShowLabels", OBJPROP_STATE, false);
+         return;
+      }
+      if(sparam == "Btn_ShowGEX")
       {
          g_show_gex = !g_show_gex;
          GlobalVariableSet(gv_gex, g_show_gex);
@@ -460,27 +547,42 @@ void UpdateLevels()
 void DrawUpdateStatus(string today_str, bool today_loaded, bool fallback_loaded, string latest_date, int success_count)
 {
    string name = g_obj_prefix + "UpdateStatus";
-   ObjectDelete(0, name);
+   ObjectDelete(0, name);
+   string bg_name = name + "_BG";
+   ObjectDelete(0, bg_name);
+   if(ObjectCreate(0, bg_name, OBJ_RECTANGLE_LABEL, 0, 0, 0))
+   {
+      ObjectSetInteger(0, bg_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, bg_name, OBJPROP_XDISTANCE, 8);
+      ObjectSetInteger(0, bg_name, OBJPROP_YDISTANCE, 49);
+      ObjectSetInteger(0, bg_name, OBJPROP_XSIZE, 310);
+      ObjectSetInteger(0, bg_name, OBJPROP_YSIZE, 22);
+      ObjectSetInteger(0, bg_name, OBJPROP_BGCOLOR, BlendWithChartBackground(clrBlack, 8));
+      ObjectSetInteger(0, bg_name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, bg_name, OBJPROP_BORDER_COLOR, BlendWithChartBackground(clrSlateGray, 45));
+      ObjectSetInteger(0, bg_name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, bg_name, OBJPROP_HIDDEN, true);
+   }
    if(ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0))
    {
       string status = "";
       color status_color = clrCrimson;
       if(today_loaded)
       {
-         status = "GEX today OK: " + today_str;
+         status = StringFormat("GEX %s | READY", CompactDate(today_str));
          status_color = clrSeaGreen;
       }
       else if(fallback_loaded)
       {
-         status = StringFormat("GEX today MISSING: %s | latest: %s", today_str, latest_date);
+         status = StringFormat("GEX %s | NO DATA | LAST %s", CompactDate(today_str), CompactDate(latest_date));
          status_color = clrCrimson;
       }
       else
       {
-         status = "GEX today MISSING: " + today_str;
+         status = StringFormat("GEX %s | NO DATA", CompactDate(today_str));
          status_color = clrCrimson;
       }
-      status += StringFormat(" | loaded days: %d", success_count);
+      status += StringFormat(" | %dD", success_count);
       ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 15);
       ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 56);
@@ -712,7 +814,38 @@ color BlendWithChartBackground(color tint, int tint_pct)
 
 //+------------------------------------------------------------------+
 
-double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_today, int &out_shift)
+string CompactDate(string iso_date)
+{
+   if(StringLen(iso_date) < 10)
+      return iso_date;
+   return StringSubstr(iso_date, 8, 2) + "." + StringSubstr(iso_date, 5, 2);
+}
+
+int TradingSessionAge(datetime session_start)
+{
+   datetime today_start = StringToTime(TimeToString(TimeCurrent(), TIME_DATE));
+   if(session_start >= today_start)
+      return 0;
+   int age = 0;
+   for(datetime cursor = session_start + 86400; cursor <= today_start; cursor += 86400)
+   {
+      MqlDateTime dt;
+      TimeToStruct(cursor, dt);
+      if(dt.day_of_week != 0 && dt.day_of_week != 6)
+         age++;
+   }
+   return age;
+}
+
+color FadeHistoricalColor(color source, int session_age, int minimum_tint)
+{
+   if(!InpFadeHistory || session_age <= 0)
+      return source;
+   int tint_pct = MathMax(minimum_tint, 100 - session_age * 12);
+   return BlendWithChartBackground(source, tint_pct);
+}
+
+double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_today, int &out_shift)
 {
    out_shift = -1;
    double spot_reference = 0.0;
@@ -996,7 +1129,24 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       return false;
    }
    datetime time_start = StringToTime(date_str + " 00:00:00");
-   datetime time_end = StringToTime(date_str + " 23:59:59");
+   datetime time_end = StringToTime(date_str + " 23:59:59");
+
+   int session_age = TradingSessionAge(time_start);
+   if(InpDrawDaySeparators)
+   {
+      string separator_name = StringFormat("%s%s_%s_DaySeparator", g_obj_prefix, g_base_currency, date_str);
+      ObjectDelete(0, separator_name);
+      if(ObjectCreate(0, separator_name, OBJ_VLINE, 0, time_start, 0))
+      {
+         ObjectSetInteger(0, separator_name, OBJPROP_COLOR, FadeHistoricalColor(clrSlateGray, session_age, 28));
+         ObjectSetInteger(0, separator_name, OBJPROP_WIDTH, 1);
+         ObjectSetInteger(0, separator_name, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, separator_name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, separator_name, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, separator_name, OBJPROP_BACK, true);
+         ObjectSetString(0, separator_name, OBJPROP_TOOLTIP, date_str);
+      }
+   }
    double fw_offset = InpForwardPoints * Point();
    if(InpAutoSpotAdjust && futures_spot > 0.0)
    {
@@ -1102,7 +1252,49 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       max_abs_gex = display_max_abs_gex;
    if(display_max_abs_gamma > 0.0)
       max_abs_gamma = display_max_abs_gamma;
-   PrintFormat("CME GEX display pruning %s %s: drawable rows %d -> %d | max rows=%d | distance %.1f%% | key distance %.1f%%",
+   bool draw_labels[];
+   int label_priority[];
+   ArrayResize(draw_labels, valid_rows);
+   ArrayResize(label_priority, valid_rows);
+   for(int i = 0; i < valid_rows; i++)
+   {
+      draw_labels[i] = draw_rows[i];
+      label_priority[i] = 0;
+      if(!draw_rows[i])
+         continue;
+      bool is_key_label = (rows[i].strike == max_daily_call_oi_strike && max_daily_call_oi > 0.0) ||
+                          (rows[i].strike == max_daily_put_oi_strike && max_daily_put_oi > 0.0) ||
+                          (rows[i].strike == max_global_call_oi_strike && max_global_call_oi > 0.0) ||
+                          (rows[i].strike == max_global_put_oi_strike && max_global_put_oi > 0.0) ||
+                          (rows[i].strike == max_gamma_strike && max_abs_gamma > 0.0);
+      double visual_ratio = (max_abs_gex > 0.0) ? MathAbs(rows[i].total_gex) / max_abs_gex : 0.0;
+      label_priority[i] = is_key_label ? 3 : (visual_ratio >= 0.75 ? 2 : 1);
+   }
+   if(InpPreventLabelOverlap && reference_spot > 0.0 && InpMinLabelGapPercent > 0.0)
+   {
+      double min_label_gap = reference_spot * InpMinLabelGapPercent / 100.0;
+      for(int i = 0; i < valid_rows; i++)
+      {
+         if(!draw_labels[i])
+            continue;
+         for(int j = i + 1; j < valid_rows; j++)
+         {
+            if(!draw_labels[j] || MathAbs(rows[i].strike - rows[j].strike) >= min_label_gap)
+               continue;
+            if(label_priority[i] >= 3 && label_priority[j] >= 3)
+               continue;
+            if(label_priority[j] > label_priority[i] ||
+               (label_priority[j] == label_priority[i] && MathAbs(rows[j].total_gex) > MathAbs(rows[i].total_gex)))
+            {
+               draw_labels[i] = false;
+               break;
+            }
+            draw_labels[j] = false;
+         }
+      }
+   }
+
+   PrintFormat("CME GEX display pruning %s %s: drawable rows %d -> %d | max rows=%d | distance %.1f%% | key distance %.1f%%",
                g_base_currency, date_str, valid_rows, visible_rows, max_visible_rows, max_distance_pct, max_key_distance_pct);
    if(InpDrawZones && r68_high > 0.0 && r68_low > 0.0)
    {
@@ -1110,8 +1302,9 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       double chart_r95_low = r95_low + fw_offset;
       double chart_r68_high = r68_high + fw_offset;
       double chart_r68_low = r68_low + fw_offset;
-      color zone_r95_color = InpColorR95;
-      color zone_r68_color = InpColorR68;
+      int zone_tint = MathMax(4, MathMin(35, InpZoneTintPercent - session_age * 2));
+      color zone_r95_color = BlendWithChartBackground(InpColorR95, zone_tint);
+      color zone_r68_color = BlendWithChartBackground(InpColorR68, MathMin(40, zone_tint + 5));
       string r95_name = StringFormat("%s%s_%s_R95", g_obj_prefix, g_base_currency, date_str);
       string r95_name_upper = StringFormat("%s%s_%s_R95_U", g_obj_prefix, g_base_currency, date_str);
       string r95_name_lower = StringFormat("%s%s_%s_R95_L", g_obj_prefix, g_base_currency, date_str);
@@ -1184,7 +1377,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       {
          ObjectSetInteger(0, flip_name, OBJPROP_RAY_RIGHT, false);
          ObjectSetInteger(0, flip_name, OBJPROP_RAY_LEFT, false);
-         ObjectSetInteger(0, flip_name, OBJPROP_COLOR, InpColorZeroGamma);
+         ObjectSetInteger(0, flip_name, OBJPROP_COLOR, FadeHistoricalColor(InpColorZeroGamma, session_age, 65));
          ObjectSetInteger(0, flip_name, OBJPROP_WIDTH, InpWidthZeroGamma);
          ObjectSetInteger(0, flip_name, OBJPROP_STYLE, InpStyleZeroGamma);
          ObjectSetInteger(0, flip_name, OBJPROP_SELECTABLE, false);
@@ -1196,20 +1389,20 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          // Text label next to the line
          string flip_txt = flip_name + "_TXT";
          ObjectDelete(0, flip_txt);
-         datetime flip_txt_time = time_start + 3600;
+         datetime flip_txt_time = time_end - 900;
          if(ObjectCreate(0, flip_txt, OBJ_TEXT, 0, flip_txt_time, chart_gamma_flip))
          {
             ObjectSetString(0, flip_txt, OBJPROP_TEXT, "Zero Gamma");
-            ObjectSetInteger(0, flip_txt, OBJPROP_COLOR, InpColorZeroGamma);
+            ObjectSetInteger(0, flip_txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorZeroGamma, session_age, 65));
             ObjectSetInteger(0, flip_txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, flip_txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+            ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);
             ObjectSetInteger(0, flip_txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, flip_txt, OBJPROP_HIDDEN, true);
          }
       }
    }
-   datetime label_time = time_start + 3600;
+   datetime label_time = time_end - 900;
    for(int i = 0; i < valid_rows; i++)
    {
       if(!draw_rows[i])
@@ -1240,19 +1433,19 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       bool is_daily_put = (strike == max_daily_put_oi_strike && max_daily_put_oi > 0);
       bool is_max_ag = (strike == max_gamma_strike && max_abs_gamma > 0);
       if(is_global_call && is_global_put)
-         type_prefix += "GLOB CALL/PUT ";
+         type_prefix += "G.C/P ";
       else if(is_global_call)
-         type_prefix += "GLOB CALL ";
+         type_prefix += "G.CALL ";
       else if(is_global_put)
-         type_prefix += "GLOB PUT ";
+         type_prefix += "G.PUT ";
       if(is_daily_call && is_daily_put)
-         type_prefix += "DLY CALL/PUT ";
+         type_prefix += "D.C/P ";
       else if(is_daily_call)
-         type_prefix += "DLY CALL ";
+         type_prefix += "D.CALL ";
       else if(is_daily_put)
-         type_prefix += "DLY PUT ";
+         type_prefix += "D.PUT ";
       if(is_max_ag)
-         type_prefix += "MAX AG ";
+         type_prefix += "MAXAG ";
       if(is_global_call && is_global_put)
       {
          line_color = (max_global_put_oi >= max_global_call_oi) ? InpColorPutMarket : InpColorCallMarket;
@@ -1288,7 +1481,10 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          line_color = InpColorGamma;
          line_width = 4;
       }
-      string obj_name = StringFormat("%s%s_%s_%.4f", g_obj_prefix, g_base_currency, date_str, strike);
+      bool is_key_level = (is_global_call || is_global_put || is_daily_call || is_daily_put || is_max_ag);
+      line_color = FadeHistoricalColor(line_color, session_age, is_key_level ? 65 : 48);
+      color ag_line_color = FadeHistoricalColor(InpColorAGLine, session_age, 48);
+      string obj_name = StringFormat("%s%s_%s_%.4f", g_obj_prefix, g_base_currency, date_str, strike);
       ObjectDelete(0, obj_name);
       if(ObjectCreate(0, obj_name, OBJ_TREND, 0, time_start, chart_price, gex_line_end, chart_price))
       {
@@ -1299,7 +1495,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetInteger(0, obj_name, OBJPROP_STYLE, line_style);
          ObjectSetInteger(0, obj_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true);
-         ObjectSetInteger(0, obj_name, OBJPROP_BACK, true);
+         ObjectSetInteger(0, obj_name, OBJPROP_BACK, !is_key_level);
          string tooltip = StringFormat("Date: %s | Strike: %.4f | Chart Price: %.5f | GEX: %.0f | Abs Gamma: %.0f | D_Call_OI: %.0f | D_Put_OI: %.0f | G_Call_OI: %.0f | G_Put_OI: %.0f", 
                                        date_str, strike, chart_price, gex, ag, rows[i].daily_call_oi, rows[i].daily_put_oi, rows[i].global_call_oi, rows[i].global_put_oi);
          ObjectSetString(0, obj_name, OBJPROP_TOOLTIP, tooltip);
@@ -1311,7 +1507,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       {
          ObjectSetInteger(0, ag_line_name, OBJPROP_RAY_RIGHT, false);
          ObjectSetInteger(0, ag_line_name, OBJPROP_RAY_LEFT, false);
-         ObjectSetInteger(0, ag_line_name, OBJPROP_COLOR, InpColorAGLine);
+         ObjectSetInteger(0, ag_line_name, OBJPROP_COLOR, ag_line_color);
          ObjectSetInteger(0, ag_line_name, OBJPROP_WIDTH, 1);
          ObjectSetInteger(0, ag_line_name, OBJPROP_STYLE, STYLE_DOT);
          ObjectSetInteger(0, ag_line_name, OBJPROP_SELECTABLE, false);
@@ -1326,16 +1522,25 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       int ag_pct = (int)MathRound(label_ag_ratio * 100.0);
       string text_obj_name = obj_name + "_TXT";
       ObjectDelete(0, text_obj_name);
-      if(ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, label_time, chart_price))
+      datetime row_label_time = (datetime)MathMin((double)(gex_line_end + 300), (double)(time_end - 300));
+      ENUM_ANCHOR_POINT row_label_anchor = ANCHOR_LEFT_LOWER;
+      if(gex_ratio >= 0.78)
+      {
+         row_label_time = time_end - 300;
+         row_label_anchor = ANCHOR_RIGHT_LOWER;
+      }
+      if(draw_labels[i] && ObjectCreate(0, text_obj_name, OBJ_TEXT, 0, row_label_time, chart_price))
       {
          string sign = (gex >= 0) ? "+" : "";
          string text_val = StringFormat("%sGEX %s%s (%d%%) | AG (%d%%)", 
-                                        type_prefix, sign, FormatVolume(gex), gex_pct, ag_pct);
+                                        type_prefix, sign, FormatVolume(gex), gex_pct, ag_pct);
+         if(InpCompactLabels)
+            text_val = StringFormat("%s%s%s · G%d · A%d", type_prefix, sign, FormatVolume(gex), gex_pct, ag_pct);
          ObjectSetString(0, text_obj_name, OBJPROP_TEXT, text_val);
          ObjectSetInteger(0, text_obj_name, OBJPROP_COLOR, line_color);
          ObjectSetInteger(0, text_obj_name, OBJPROP_FONTSIZE, 8);
          ObjectSetString(0, text_obj_name, OBJPROP_FONT, "Consolas");
-         ObjectSetInteger(0, text_obj_name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+         ObjectSetInteger(0, text_obj_name, OBJPROP_ANCHOR, row_label_anchor);
          ObjectSetInteger(0, text_obj_name, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, text_obj_name, OBJPROP_HIDDEN, true);
       }
@@ -1349,7 +1554,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          {
             ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDCall);
+            ObjectSetInteger(0, name, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDCall, session_age, 65));
             ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -1360,7 +1565,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectDelete(0, txt);
             ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
-            ObjectSetInteger(0, txt, OBJPROP_COLOR, clrBlack);
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDCall, session_age, 65));
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
@@ -1377,7 +1582,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          {
             ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
             ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-            ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorMDDPut);
+            ObjectSetInteger(0, name, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDPut, session_age, 65));
             ObjectSetInteger(0, name, OBJPROP_WIDTH, InpWidthDailyMDD);
             ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
             ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -1388,7 +1593,7 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectDelete(0, txt);
             ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
-            ObjectSetInteger(0, txt, OBJPROP_COLOR, clrBlack);
+            ObjectSetInteger(0, txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDPut, session_age, 65));
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
