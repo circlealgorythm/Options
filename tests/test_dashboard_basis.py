@@ -37,3 +37,31 @@ def test_usdcad_futures_reference_is_inverted(monkeypatch):
 
 def test_xau_does_not_apply_an_unsynchronized_proxy_offset():
     assert run_dashboard.get_market_basis("XAU") is None
+
+
+def test_implausible_basis_is_rejected(monkeypatch):
+    prices = {"^NDX": 20000.0, "NQ=F": 10000.0}
+    monkeypatch.setattr(
+        run_dashboard,
+        "_fetch_yahoo_reference",
+        lambda ticker, selected_date=None: prices[ticker],
+    )
+
+    assert run_dashboard.get_market_basis("NAS") is None
+
+
+def test_xau_metadata_marks_basis_unavailable_without_fake_live_price():
+    metadata = {"spot": 4100.0}
+
+    result = run_dashboard.attach_market_basis(
+        metadata,
+        "XAU",
+        datetime.date(2026, 7, 31),
+        today=datetime.date(2026, 8, 2),
+    )
+
+    assert result["basis_available"] is False
+    assert result["basis_reason"] == "NO_SYNCHRONIZED_XAU_REFERENCE"
+    assert result["live_spot"] is None
+    assert result["live_futures"] is None
+    assert result["live_offset"] == 0.0

@@ -193,6 +193,51 @@ function formatPrice(value) {
     return (state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC') ? value.toFixed(2) : value.toFixed(4);
 }
 
+async function fetchJson(url, options = {}, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal,
+            headers: {
+                Accept: 'application/json',
+                ...(options.headers || {})
+            }
+        });
+        let payload;
+        try {
+            payload = await response.json();
+        } catch (_error) {
+            throw new Error(`Сервер вернул некорректный JSON (HTTP ${response.status})`);
+        }
+        if (!response.ok) {
+            const apiError = payload?.error;
+            const message = typeof apiError === 'object'
+                ? apiError.message
+                : (apiError || `HTTP ${response.status}`);
+            const error = new Error(message);
+            error.payload = payload;
+            error.status = response.status;
+            error.code = apiError?.code || 'HTTP_ERROR';
+            throw error;
+        }
+        return payload;
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new Error('Превышено время ожидания ответа сервера');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function getSpotOffset(metadata) {
+    if (!state.adaptSpot || metadata?.basis_available !== true) return 0;
+    return Number.isFinite(metadata.live_offset) ? metadata.live_offset : 0;
+}
+
 // Start live clock widget
 function startClock() {
     setInterval(() => {
@@ -204,8 +249,8 @@ function startClock() {
 // Fetch Dates dropdown
 async function fetchDates() {
     try {
-        const response = await fetch(`/api/dates?currency=${state.currency}`);
-        const payload = await response.json();
+        const params = new URLSearchParams({ currency: state.currency });
+        const payload = await fetchJson(`/api/dates?${params}`);
         
         elements.dateSelect.innerHTML = '';
         if (payload.dates && payload.dates.length > 0) {
@@ -239,8 +284,7 @@ async function fetchDates() {
 // Fetch MT5 Sync Status
 async function fetchSyncStatus() {
     try {
-        const response = await fetch('/api/status');
-        const payload = await response.json();
+        const payload = await fetchJson('/api/status');
         state.syncStatus = payload;
         
         if (payload.exists) {
@@ -294,16 +338,8 @@ function findZeroGammaStrike(levels, spot) {
 // Fetch dashboard option level data
 async function fetchLevelData() {
     try {
-        const url = `/api/data?currency=${state.currency}&date=${state.date}`;
-        const response = await fetch(url);
-        const payload = await response.json();
-        
-        if (payload.error) {
-            let errorMsg = payload.error;
-            elements.tableBody.innerHTML = `<tr><td colspan="10" class="text-center value-red">${errorMsg}</td></tr>`;
-            clearDashboardData();
-            return;
-        }
+        const params = new URLSearchParams({ currency: state.currency, date: state.date });
+        const payload = await fetchJson(`/api/data?${params}`);
 
         state.data = payload;
         
@@ -321,7 +357,7 @@ async function fetchLevelData() {
         
     } catch (e) {
         console.error('Error fetching levels data', e);
-        elements.tableBody.innerHTML = `<tr><td colspan="10" class="text-center value-red">Ошибка чтения опционных уровней из API.</td></tr>`;
+        elements.tableBody.innerHTML = `<tr><td colspan="10" class="text-center value-red">${e.message || 'Ошибка чтения опционных уровней из API.'}</td></tr>`;
         clearDashboardData();
     }
 }
@@ -354,13 +390,20 @@ function clearDashboardData() {
 function updateMetrics(payload) {
     const meta = payload.metadata;
     const levels = payload.levels;
-    const offset = (state.adaptSpot && Number.isFinite(meta.live_offset)) ? meta.live_offset : 0;
+    const offset = getSpotOffset(meta);
+    const basisApplied = state.adaptSpot && meta.basis_available === true;
     
     // Spot Price
     elements.metricSpot.textContent = formatPrice(meta.spot + offset);
     const currencyLabel = meta.currency.includes('USD') ? meta.currency : `${meta.currency}USD`;
     const adaptedLabel = meta.offset_status === 'historical_open' ? 'Исторический спот' : 'Живой спот';
-    elements.metricSpotCurrency.textContent = state.adaptSpot ? `${adaptedLabel} ${currencyLabel}` : `Опорный фьючерс ${currencyLabel}`;
+    if (basisApplied) {
+        elements.metricSpotCurrency.textContent = `${adaptedLabel} ${currencyLabel}`;
+    } else if (state.adaptSpot && meta.basis_available === false) {
+        elements.metricSpotCurrency.textContent = `Basis недоступен · фьючерс ${currencyLabel}`;
+    } else {
+        elements.metricSpotCurrency.textContent = `Опорный фьючерс ${currencyLabel}`;
+    }
     
     // Net GEX
     const totalGex = levels.reduce((acc, curr) => acc + curr.gex, 0);
@@ -400,17 +443,26 @@ function updateMetrics(payload) {
     const referenceSources = meta.spot_source && meta.iv_source
         ? ` | REF: ${meta.spot_source}/${meta.iv_source}`
         : '';
-    elements.metricMonths.textContent = `DLY: ${meta.daily_month}${dailyExpiry} | GLB: ${meta.global_month}${globalExpiry}${qualityStatus}${referenceSources}`;
-    elements.metricMonths.title = meta.quality_reasons && meta.quality_reasons !== 'NONE'
-        ? meta.quality_reasons
+    const anomalyStatus = meta.anomaly_status && !['UNKNOWN', 'OK'].includes(meta.anomaly_status)
+        ? ` | ANOM: ${meta.anomaly_status}`
         : '';
+    elements.metricMonths.textContent = `DLY: ${meta.daily_month}${dailyExpiry} | GLB: ${meta.global_month}${globalExpiry}${qualityStatus}${anomalyStatus}${referenceSources}`;
+    const diagnostics = [];
+    if (meta.quality_reasons && meta.quality_reasons !== 'NONE') {
+        diagnostics.push(`DATA: ${meta.quality_reasons}`);
+    }
+    if (meta.anomaly_details && meta.anomaly_details !== 'NONE') {
+        diagnostics.push(`ANOMALY: ${meta.anomaly_details}`);
+    }
+    elements.metricMonths.title = diagnostics.join('\n');
 }
 
 // Render data table (Dynamic: Calculated Levels or Key Strikes Only)
 function renderTable(levels, spot) {
     elements.tableBody.innerHTML = '';
-    const liveOffset = state.data?.metadata?.live_offset;
-    const offset = (state.adaptSpot && Number.isFinite(liveOffset)) ? liveOffset : 0;
+    const metadata = state.data?.metadata;
+    const offset = getSpotOffset(metadata);
+    const basisApplied = state.adaptSpot && metadata?.basis_available === true;
     const adaptedSpot = spot + offset;
     
     if (state.activeTab === 'calculated') {
@@ -441,13 +493,13 @@ function renderTable(levels, spot) {
         
         // 1. Spot base
         calcLevels.push({
-            name: state.adaptSpot ? 'Живая цена спот (База)' : 'Текущий спот фьючерса (База)',
+            name: basisApplied ? 'Цена спот (База)' : 'Опорная цена фьючерса (База)',
             baseStrike: adaptedSpot,
-            formula: 'Рыночная цена спот',
+            formula: basisApplied ? 'Синхронизированный spot/futures basis' : 'CME futures reference',
             price: adaptedSpot,
             oi: '-',
             badge: 'badge-bg-cyan',
-            badgeText: 'FUT SPOT'
+            badgeText: basisApplied ? 'SPOT' : 'FUT'
         });
 
         const isXAU = state.currency === 'XAU' || state.currency === 'NAS' || state.currency === 'SPX' || state.currency === 'BTC';
@@ -732,7 +784,7 @@ const verticalLinePlugin = {
         
         if (!meta) return;
         
-        const offset = (state.adaptSpot && Number.isFinite(meta.live_offset)) ? meta.live_offset : 0;
+        const offset = getSpotOffset(meta);
         
         // Helper function to draw a vertical line with label
         function drawVertical(strikeValue, color, labelText, lineStyle = []) {
@@ -789,7 +841,7 @@ function renderChart(payload) {
     const sortedData = [...payload.levels].sort((a, b) => a.strike - b.strike);
     
     const spot = payload.metadata.spot;
-    const offset = (state.adaptSpot && Number.isFinite(payload.metadata.live_offset)) ? payload.metadata.live_offset : 0;
+    const offset = getSpotOffset(payload.metadata);
     
     // Find closest strike to spot
     const closestStrikeRow = sortedData.reduce((prev, curr) => 
@@ -1079,26 +1131,26 @@ async function triggerCmeUpdate() {
     elements.btnUpdate.querySelector('i').classList.add('fa-spin');
     
     try {
-        const response = await fetch('/api/update', {
+        const payload = await fetchJson('/api/update', {
             method: 'POST'
-        });
-        const payload = await response.json();
-        
-        if (payload.success) {
-            elements.modalTerminalLog.textContent += '\n>> Расчет опционных уровней завершен успешно!\n';
-            elements.modalTerminalLog.textContent += `Код завершения: ${payload.exit_code}\n`;
-            elements.modalTerminalLog.textContent += `Лог вывода:\n${payload.stdout}\n`;
-            elements.btnCloseModal.textContent = 'Расчет завершен';
-        } else {
+        }, 130000);
+
+        elements.modalTerminalLog.textContent += '\n>> Расчет опционных уровней завершен успешно!\n';
+        elements.modalTerminalLog.textContent += `Код завершения: ${payload.exit_code}\n`;
+        elements.modalTerminalLog.textContent += `Лог вывода:\n${payload.stdout}\n`;
+        elements.btnCloseModal.textContent = 'Расчет завершен';
+    } catch (e) {
+        const payload = e.payload;
+        if (payload && Number.isInteger(payload.exit_code)) {
             elements.modalTerminalLog.textContent += `\n>> ОШИБКА: Расчетный конвейер завершился со сбоем!\n`;
             elements.modalTerminalLog.textContent += `Код завершения: ${payload.exit_code}\n`;
             elements.modalTerminalLog.textContent += `Ошибки:\n${payload.stderr}\n`;
             elements.modalTerminalLog.textContent += `Логи вывода:\n${payload.stdout}\n`;
             elements.btnCloseModal.textContent = 'Сбой выполнения';
+        } else {
+            elements.modalTerminalLog.textContent += `\n>> ИСКЛЮЧЕНИЕ: Сбой запроса к серверу: ${e.message}\n`;
+            elements.btnCloseModal.textContent = 'Ошибка сети';
         }
-    } catch (e) {
-        elements.modalTerminalLog.textContent += `\n>> ИСКЛЮЧЕНИЕ: Сбой запроса к серверу: ${e.message}\n`;
-        elements.btnCloseModal.textContent = 'Ошибка сети';
     } finally {
         elements.btnCloseModal.disabled = false;
         elements.btnUpdate.querySelector('i').classList.remove('fa-spin');

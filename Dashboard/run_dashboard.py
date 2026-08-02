@@ -1,72 +1,129 @@
 import os
 import sys
+import csv
 import json
 import glob
 import time
 import datetime
+import math
+import socket
+import tempfile
+import threading
 import urllib.request
 import urllib.error
 import subprocess
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-import ssl
+import uuid
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs, quote
 
 PORT = 8080
+HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
+SUPPORTED_CURRENCIES = frozenset({"EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "USDCAD"})
 
 LAST_SYNC_ATTEMPT = 0.0
 SYNC_THROTTLE_SECONDS = 900  # 15 minutes throttle
+SYNC_IN_PROGRESS = False
+SYNC_STATE_LOCK = threading.Lock()
 
 # Synchronized spot/futures cache (TTL = 60s for live data)
 MARKET_PRICE_CACHE = {}
+MARKET_PRICE_CACHE_LOCK = threading.Lock()
 CACHE_TTL = 60.0
+LIVE_STALE_CACHE_SECONDS = 300.0
+HTTP_TIMEOUT_SECONDS = 5
+HTTP_RETRY_ATTEMPTS = 3
+MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 
 YAHOO_MARKETS = {
-    "EUR": {"spot": "EURUSD=X", "futures": "6E=F"},
-    "GBP": {"spot": "GBPUSD=X", "futures": "6B=F"},
+    "EUR": {"spot": "EURUSD=X", "futures": "6E=F", "max_basis_pct": 0.05},
+    "GBP": {"spot": "GBPUSD=X", "futures": "6B=F", "max_basis_pct": 0.05},
     # Yahoo exposes GC futures but no reliable XAU/USD spot series. Leaving
     # XAU unmapped deliberately prevents a stale or cross-instrument offset.
-    "NAS": {"spot": "^NDX", "futures": "NQ=F"},
-    "SPX": {"spot": "^SPX", "futures": "ES=F"},
-    "BTC": {"spot": "BTC-USD", "futures": "BTC=F"},
-    "USDCAD": {"spot": "USDCAD=X", "futures": "6C=F", "invert_futures": True},
+    "NAS": {"spot": "^NDX", "futures": "NQ=F", "max_basis_pct": 0.10},
+    "SPX": {"spot": "^SPX", "futures": "ES=F", "max_basis_pct": 0.10},
+    "BTC": {"spot": "BTC-USD", "futures": "BTC=F", "max_basis_pct": 0.20},
+    "USDCAD": {
+        "spot": "USDCAD=X",
+        "futures": "6C=F",
+        "invert_futures": True,
+        "max_basis_pct": 0.05,
+    },
 }
+
+
+def _fetch_bytes(url, timeout=HTTP_TIMEOUT_SECONDS, attempts=HTTP_RETRY_ATTEMPTS):
+    """Fetch a bounded response with verified TLS and transient retries."""
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "CME-GEX-Dashboard/1.0"},
+    )
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                content = response.read(MAX_DOWNLOAD_BYTES + 1)
+                if len(content) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("HTTP response exceeds the configured size limit")
+                return content
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == attempts - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                raise
+        time.sleep(0.2 * (2 ** attempt))
+    raise last_error
 
 
 def _fetch_yahoo_reference(ticker, selected_date=None):
     cache_key = (ticker, selected_date.isoformat() if selected_date else "live")
     now = time.time()
-    cached = MARKET_PRICE_CACHE.get(cache_key)
+    with MARKET_PRICE_CACHE_LOCK:
+        cached = MARKET_PRICE_CACHE.get(cache_key)
     cache_ttl = 86400.0 if selected_date else CACHE_TTL
     if cached and now - cached["timestamp"] < cache_ttl:
         return cached["price"]
 
+    encoded_ticker = quote(ticker, safe="")
     if selected_date:
         period1 = int(datetime.datetime.combine(selected_date, datetime.time.min, datetime.timezone.utc).timestamp())
         period2 = int((datetime.datetime.combine(selected_date, datetime.time.min, datetime.timezone.utc) + datetime.timedelta(days=2)).timestamp())
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={period1}&period2={period2}&interval=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?period1={period1}&period2={period2}&interval=1d"
     else:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}"
 
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-    context = ssl._create_unverified_context()
     try:
-        with urllib.request.urlopen(req, context=context, timeout=5) as response:
-            result = json.loads(response.read().decode('utf-8'))['chart']['result'][0]
-            if selected_date:
-                opens = result.get('indicators', {}).get('quote', [{}])[0].get('open', [])
-                price = next((float(value) for value in opens if value is not None and value > 0.0), None)
-            else:
-                price = result.get('meta', {}).get('regularMarketPrice')
-            if price is not None and float(price) > 0.0:
-                price = float(price)
+        result = json.loads(_fetch_bytes(url).decode("utf-8"))["chart"]["result"][0]
+        if selected_date:
+            opens = result.get("indicators", {}).get("quote", [{}])[0].get("open", [])
+            price = next((float(value) for value in opens if value is not None and value > 0.0), None)
+        else:
+            price = result.get("meta", {}).get("regularMarketPrice")
+        if price is not None and float(price) > 0.0:
+            price = float(price)
+            with MARKET_PRICE_CACHE_LOCK:
                 MARKET_PRICE_CACHE[cache_key] = {"price": price, "timestamp": now}
-                return price
-    except Exception as exc:
+            return price
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+        socket.timeout,
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        IndexError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(f"[MarketReference] Error fetching {ticker}: {exc}")
-        if cached:
+        cache_age = now - cached["timestamp"] if cached else None
+        if cached and (selected_date or cache_age <= LIVE_STALE_CACHE_SECONDS):
             return cached["price"]
     return None
 
@@ -82,23 +139,113 @@ def get_market_basis(currency, selected_date=None):
         futures = 1.0 / futures
     if not spot or not futures:
         return None
+    offset = spot - futures
+    offset_pct = abs(offset) / abs(futures)
+    if offset_pct > config["max_basis_pct"]:
+        print(
+            f"[MarketReference] Rejected {currency} basis {offset_pct:.2%}: "
+            "spot/futures references are not comparable"
+        )
+        return None
     return {
         "spot": spot,
         "futures": futures,
-        "offset": spot - futures,
+        "offset": offset,
+        "offset_pct": offset_pct,
         "source": "historical_open" if selected_date else "live_synchronized",
     }
 
-def sync_today_files_from_github():
-    global LAST_SYNC_ATTEMPT
-    
-    # Check if we should throttle
-    now = time.time()
-    if now - LAST_SYNC_ATTEMPT < SYNC_THROTTLE_SECONDS:
-        return
-        
-    LAST_SYNC_ATTEMPT = now
-    
+
+def attach_market_basis(metadata, currency, selected_date, today=None):
+    """Attach only a synchronized, bounded spot/futures basis to API metadata."""
+    today = today or datetime.date.today()
+    basis_date = None if selected_date == today else selected_date
+    basis = get_market_basis(currency, basis_date)
+    if basis is None:
+        metadata.update({
+            "live_spot": None,
+            "live_futures": None,
+            "live_offset": 0.0,
+            "basis_available": False,
+            "basis_reason": (
+                "NO_SYNCHRONIZED_XAU_REFERENCE"
+                if currency == "XAU"
+                else "REFERENCE_UNAVAILABLE"
+            ),
+            "offset_status": "unavailable",
+        })
+        return metadata
+
+    metadata.update({
+        "live_spot": basis["spot"],
+        "live_futures": basis["futures"],
+        "live_offset": basis["offset"],
+        "basis_available": True,
+        "basis_reason": "NONE",
+        "offset_status": basis["source"],
+    })
+    return metadata
+
+
+def _validate_gex_csv(content, expected_currency):
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeError as exc:
+        raise ValueError("Downloaded GEX file is not valid UTF-8") from exc
+    reader = csv.DictReader(text.splitlines())
+    required = {
+        "Currency",
+        "Strike",
+        "Total_GEX",
+        "Total_Abs_Gamma",
+        "Daily_Call_Settle",
+        "Daily_Call_OI",
+        "Daily_Put_Settle",
+        "Daily_Put_OI",
+        "Global_Call_OI",
+        "Global_Put_OI",
+        "Futures_Spot",
+    }
+    if not reader.fieldnames or not required.issubset(reader.fieldnames):
+        raise ValueError("Downloaded GEX file has an unsupported schema")
+    row_count = 0
+    numeric_columns = required - {"Currency"}
+    for row in reader:
+        row_count += 1
+        if row.get("Currency", "").upper() != expected_currency:
+            raise ValueError("Downloaded GEX file contains the wrong product")
+        try:
+            numeric_values = [float(row[column]) for column in numeric_columns]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Downloaded GEX file contains an invalid numeric value") from exc
+        if not all(math.isfinite(value) for value in numeric_values):
+            raise ValueError("Downloaded GEX file contains a non-finite numeric value")
+    if row_count == 0:
+        raise ValueError("Downloaded GEX file contains no rows")
+
+
+def _write_file_atomically(destination, content):
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=os.path.basename(destination) + ".",
+        suffix=".tmp",
+        dir=os.path.dirname(destination),
+    )
+    try:
+        with os.fdopen(fd, "wb") as temporary_file:
+            temporary_file.write(content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, destination)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        raise
+
+
+def _perform_today_files_sync():
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     currencies = ["EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "USDCAD"]
     
@@ -135,26 +282,20 @@ def sync_today_files_from_github():
         github_url = f"https://raw.githubusercontent.com/circlealgorythm/Options/main/data/{filename}"
         print(f"[Sync] Fetching {filename} from {github_url} ...")
         try:
-            req = urllib.request.Request(
-                github_url, 
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-            )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                content = response.read()
-                os.makedirs(DATA_DIR, exist_ok=True)
-                with open(local_path, "wb") as f:
-                    f.write(content)
-                print(f"[Sync] Successfully downloaded and saved {filename} to local data/")
-                
-                # Copy to MT5
-                if copy_fn:
-                    copied = copy_fn(local_path, mt5_gex_dir=mt5_dir)
-                    if copied:
-                        print(f"[Sync] Copied {filename} to MT5: {copied}")
-                    else:
-                        print(f"[Sync] Warning: copy_csv_to_mt5 returned None for {filename}")
+            content = _fetch_bytes(github_url)
+            _validate_gex_csv(content, currency)
+            _write_file_atomically(local_path, content)
+            print(f"[Sync] Successfully downloaded and saved {filename} to local data/")
+
+            # Copy to MT5 only after a validated atomic local write.
+            if copy_fn:
+                copied = copy_fn(local_path, mt5_gex_dir=mt5_dir)
+                if copied:
+                    print(f"[Sync] Copied {filename} to MT5: {copied}")
                 else:
-                    print(f"[Sync] Warning: Skipping copy of {filename} to MT5 (copy function not loaded)")
+                    print(f"[Sync] Warning: copy_csv_to_mt5 returned None for {filename}")
+            else:
+                print(f"[Sync] Warning: Skipping copy of {filename} to MT5 (copy function not loaded)")
         except urllib.error.HTTPError as he:
             if he.code == 404:
                 print(f"[Sync] File {filename} not yet available on GitHub (404).")
@@ -164,16 +305,59 @@ def sync_today_files_from_github():
             print(f"[Sync] Error downloading {filename}: {e}")
 
 
+def _finish_reserved_sync():
+    global SYNC_IN_PROGRESS
+    try:
+        _perform_today_files_sync()
+    except Exception as exc:
+        print(f"[Sync] Background synchronization failed: {exc}")
+    finally:
+        with SYNC_STATE_LOCK:
+            SYNC_IN_PROGRESS = False
+
+
+def schedule_today_files_sync():
+    """Start one throttled background sync without delaying an API request."""
+    global LAST_SYNC_ATTEMPT, SYNC_IN_PROGRESS
+    now = time.monotonic()
+    with SYNC_STATE_LOCK:
+        if SYNC_IN_PROGRESS or (
+            LAST_SYNC_ATTEMPT > 0.0
+            and now - LAST_SYNC_ATTEMPT < SYNC_THROTTLE_SECONDS
+        ):
+            return False
+        previous_attempt = LAST_SYNC_ATTEMPT
+        LAST_SYNC_ATTEMPT = now
+        SYNC_IN_PROGRESS = True
+
+    thread = threading.Thread(
+        target=_finish_reserved_sync,
+        name="gex-github-sync",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with SYNC_STATE_LOCK:
+            SYNC_IN_PROGRESS = False
+            LAST_SYNC_ATTEMPT = previous_attempt
+        raise
+    return True
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         # Initialize SimpleHTTPRequestHandler to serve from BASE_DIR (Dashboard/)
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
     def end_headers(self):
-        # Add CORS headers for developer convenience
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        allowed_origin = os.environ.get("DASHBOARD_ALLOWED_ORIGIN")
+        if allowed_origin:
+            self.send_header('Access-Control-Allow-Origin', allowed_origin)
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        if hasattr(self, "request_id"):
+            self.send_header("X-Request-ID", self.request_id)
         # Prevent browser caching of any files/endpoints in dashboard
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Pragma', 'no-cache')
@@ -181,10 +365,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_OPTIONS(self):
+        self.request_id = uuid.uuid4().hex[:12]
         self.send_response(204)
         self.end_headers()
 
     def do_GET(self):
+        self.request_id = uuid.uuid4().hex[:12]
         parsed_url = urlparse(self.path)
         path = parsed_url.path
 
@@ -194,22 +380,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.handle_get_data(parsed_url.query)
         elif path == '/api/status':
             self.handle_get_status()
+        elif path.startswith('/api/'):
+            self.send_error_json(404, "ENDPOINT_NOT_FOUND", "API endpoint not found")
         else:
             # Fallback to serving static files
             super().do_GET()
 
     def do_POST(self):
+        self.request_id = uuid.uuid4().hex[:12]
         parsed_url = urlparse(self.path)
         path = parsed_url.path
 
         if path == '/api/update':
             self.handle_post_update()
         else:
-            self.send_error(404, "Endpoint not found")
+            self.send_error_json(404, "ENDPOINT_NOT_FOUND", "API endpoint not found")
 
     def handle_get_dates(self, query_str):
         try:
-            sync_today_files_from_github()
+            schedule_today_files_sync()
         except Exception as se:
             print(f"[Sync] Error running automatic sync: {se}")
 
@@ -219,6 +408,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             
             if currency:
                 curr_upper = currency.upper()
+                if curr_upper not in SUPPORTED_CURRENCIES:
+                    self.send_error_json(
+                        400,
+                        "INVALID_CURRENCY",
+                        f"Unsupported currency: {currency}",
+                    )
+                    return
                 if curr_upper == "USDCAD":
                     search_pattern = os.path.join(DATA_DIR, "GEX_USDCAD_*.csv")
                 else:
@@ -249,16 +445,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # Sort dates descending (latest first)
             sorted_dates = sorted(list(dates), reverse=True)
             
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"dates": sorted_dates}).encode('utf-8'))
+            self.send_json(200, {"dates": sorted_dates})
         except Exception as e:
-            self.send_error_json(500, f"Error listing dates: {str(e)}")
+            self.log_error("[request_id=%s] Error listing dates: %s", self.request_id, e)
+            self.send_error_json(500, "DATES_READ_FAILED", "Unable to list GEX dates")
 
     def handle_get_data(self, query_str):
         try:
-            sync_today_files_from_github()
+            schedule_today_files_sync()
         except Exception as se:
             print(f"[Sync] Error running automatic sync: {se}")
 
@@ -267,6 +461,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             currency = params.get('currency', ['EUR'])[0].upper()
             selected_date = params.get('date', [None])[0]
 
+            if currency not in SUPPORTED_CURRENCIES:
+                self.send_error_json(
+                    400,
+                    "INVALID_CURRENCY",
+                    f"Unsupported currency: {currency}",
+                )
+                return
+
             today = datetime.date.today()
             limit = today - datetime.timedelta(days=14)
 
@@ -274,10 +476,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 try:
                     req_date = datetime.datetime.strptime(selected_date, "%Y-%m-%d").date()
                     if req_date < limit:
-                        self.send_error_json(400, f"Requested date {selected_date} is older than 14 days limit")
+                        self.send_error_json(
+                            400,
+                            "DATE_OUT_OF_RANGE",
+                            f"Requested date {selected_date} is older than the 14-day limit",
+                        )
                         return
                 except ValueError:
-                    self.send_error_json(400, f"Invalid date format: {selected_date}")
+                    self.send_error_json(
+                        400,
+                        "INVALID_DATE",
+                        f"Invalid date format: {selected_date}",
+                    )
                     return
 
             # If no date, find the latest available date for this currency
@@ -288,7 +498,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     search_pattern = os.path.join(DATA_DIR, f"GEX_{currency}USD_*.csv")
                 files = glob.glob(search_pattern)
                 if not files:
-                    self.send_error_json(404, f"No files found for currency {currency}")
+                    self.send_error_json(
+                        404,
+                        "GEX_DATA_NOT_FOUND",
+                        f"No files found for currency {currency}",
+                    )
                     return
                 # Extract dates and find the latest within 14 days limit
                 file_dates = []
@@ -303,7 +517,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         except ValueError:
                             continue
                 if not file_dates:
-                    self.send_error_json(404, f"No GEX data found within the last 14 days for {currency}")
+                    self.send_error_json(
+                        404,
+                        "GEX_DATA_NOT_FOUND",
+                        f"No GEX data found within the last 14 days for {currency}",
+                    )
                     return
                 selected_date = sorted(file_dates, reverse=True)[0]
 
@@ -314,7 +532,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             csv_path = os.path.join(DATA_DIR, csv_name)
 
             if not os.path.exists(csv_path):
-                self.send_error_json(404, f"File {csv_name} not found")
+                self.send_error_json(
+                    404,
+                    "GEX_DATA_NOT_FOUND",
+                    f"File {csv_name} not found",
+                )
                 return
 
             # Read and parse CSV manually to avoid dependencies
@@ -345,16 +567,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "iv_fallback_reason": "NONE",
                 "unknown_option_types": "NONE",
                 "estimated_expiry_types": "NONE",
+                "anomaly_status": "UNKNOWN",
+                "anomaly_codes": "NONE",
+                "anomaly_details": "NONE",
+                "anomaly_baseline_date": "NONE",
             }
 
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                if not lines:
-                    self.send_error_json(500, "Empty data file")
+            with open(csv_path, 'r', encoding='utf-8', newline='') as f:
+                reader = csv.reader(f)
+                headers = next(reader, None)
+                if not headers:
+                    self.send_error_json(
+                        500,
+                        "INVALID_GEX_FILE",
+                        "GEX data file is empty",
+                    )
                     return
-                
-                # Parse headers
-                headers = [h.strip() for h in lines[0].split(',')]
+                headers = [header.strip() for header in headers]
                 
                 # Check required headers
                 try:
@@ -392,17 +621,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     iv_fallback_idx = headers.index("IV_Fallback_Reason") if "IV_Fallback_Reason" in headers else -1
                     unknown_types_idx = headers.index("Unknown_Option_Types") if "Unknown_Option_Types" in headers else -1
                     estimated_types_idx = headers.index("Estimated_Expiry_Types") if "Estimated_Expiry_Types" in headers else -1
+                    anomaly_status_idx = headers.index("Anomaly_Status") if "Anomaly_Status" in headers else -1
+                    anomaly_codes_idx = headers.index("Anomaly_Codes") if "Anomaly_Codes" in headers else -1
+                    anomaly_details_idx = headers.index("Anomaly_Details") if "Anomaly_Details" in headers else -1
+                    anomaly_baseline_idx = headers.index("Anomaly_Baseline_Date") if "Anomaly_Baseline_Date" in headers else -1
                 except ValueError as ve:
-                    self.send_error_json(500, f"Missing required column in GEX CSV: {str(ve)}")
+                    self.log_error(
+                        "[request_id=%s] Invalid GEX schema in %s: %s",
+                        self.request_id,
+                        csv_name,
+                        ve,
+                    )
+                    self.send_error_json(
+                        500,
+                        "INVALID_GEX_SCHEMA",
+                        "GEX data file is missing a required column",
+                    )
                     return
  
                 # Read rows
                 first_row = True
-                for line in lines[1:]:
-                    line = line.strip()
-                    if not line:
+                for parts in reader:
+                    if not parts or not any(part.strip() for part in parts):
                         continue
-                    parts = [p.strip() for p in line.split(',')]
+                    parts = [part.strip() for part in parts]
                     if len(parts) < len(headers):
                         continue
  
@@ -433,6 +675,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         if iv_fallback_idx != -1: metadata["iv_fallback_reason"] = parts[iv_fallback_idx]
                         if unknown_types_idx != -1: metadata["unknown_option_types"] = parts[unknown_types_idx]
                         if estimated_types_idx != -1: metadata["estimated_expiry_types"] = parts[estimated_types_idx]
+                        if anomaly_status_idx != -1: metadata["anomaly_status"] = parts[anomaly_status_idx]
+                        if anomaly_codes_idx != -1: metadata["anomaly_codes"] = parts[anomaly_codes_idx]
+                        if anomaly_details_idx != -1: metadata["anomaly_details"] = parts[anomaly_details_idx]
+                        if anomaly_baseline_idx != -1: metadata["anomaly_baseline_date"] = parts[anomaly_baseline_idx]
 
                     levels.append({
                         "strike": float(parts[strike_idx]),
@@ -446,33 +692,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "global_put_oi": float(parts[glob_put_oi_idx]),
                     })
 
+                if first_row:
+                    self.send_error_json(
+                        500,
+                        "INVALID_GEX_FILE",
+                        "GEX data file contains no level rows",
+                    )
+                    return
+
             # Convert futures strikes to spot using synchronized references.
             # Historical files use same-day opens; today's file uses two live
             # quotes. Never subtract a live spot from a stale CSV future.
             selected_date_value = datetime.date.fromisoformat(selected_date)
-            basis_date = None if selected_date_value == datetime.date.today() else selected_date_value
-            basis = get_market_basis(currency, basis_date)
-            if basis is not None:
-                metadata["live_spot"] = basis["spot"]
-                metadata["live_futures"] = basis["futures"]
-                metadata["live_offset"] = basis["offset"]
-                metadata["offset_status"] = basis["source"]
-            else:
-                metadata["live_spot"] = metadata["spot"]
-                metadata["live_futures"] = metadata["spot"]
-                metadata["live_offset"] = 0.0
-                metadata["offset_status"] = "unavailable"
+            attach_market_basis(metadata, currency, selected_date_value)
 
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
+            self.send_json(200, {
                 "metadata": metadata,
                 "levels": levels
-            }).encode('utf-8'))
+            })
 
         except Exception as e:
-            self.send_error_json(500, f"Error reading GEX CSV: {str(e)}")
+            self.log_error(
+                "[request_id=%s] Error reading GEX CSV: %s",
+                self.request_id,
+                e,
+            )
+            self.send_error_json(
+                500,
+                "GEX_DATA_READ_FAILED",
+                "Unable to read the GEX data file",
+            )
 
     def handle_get_status(self):
         try:
@@ -488,17 +737,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 all_paths = root_files + xau_files + nas_files + crypto_files + usdcad_files
                 files = [os.path.basename(f) for f in all_paths]
             
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
+            self.send_json(200, {
                 "mt5_directory": mt5_dir,
                 "exists": exists,
                 "sync_files_count": len(files),
                 "sync_files": sorted(files, reverse=True)[:5] # top 5 files
-            }).encode('utf-8'))
+            })
         except Exception as e:
-            self.send_error_json(500, f"Error getting status: {str(e)}")
+            self.log_error(
+                "[request_id=%s] Error getting MT5 status: %s",
+                self.request_id,
+                e,
+            )
+            self.send_error_json(
+                500,
+                "MT5_STATUS_FAILED",
+                "Unable to read MT5 synchronization status",
+            )
 
     def handle_post_update(self):
         try:
@@ -506,7 +761,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             main_py_path = os.path.join(parent_dir, "main.py")
             
             if not os.path.exists(main_py_path):
-                self.send_error_json(404, "main.py not found in parent directory")
+                self.send_error_json(
+                    500,
+                    "PIPELINE_NOT_FOUND",
+                    "CME update pipeline is not available",
+                )
                 return
 
             print(f"Triggering CME update pipeline: {sys.executable} {main_py_path} in {parent_dir}")
@@ -520,38 +779,75 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 timeout=120
             )
 
-            success = (process.returncode == 0)
-            
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "success": success,
+            payload = {
+                "success": process.returncode == 0,
                 "exit_code": process.returncode,
                 "stdout": process.stdout,
-                "stderr": process.stderr
-            }).encode('utf-8'))
+                "stderr": process.stderr,
+            }
+            if process.returncode == 0:
+                self.send_json(200, payload)
+            else:
+                self.send_error_json(
+                    500,
+                    "PIPELINE_FAILED",
+                    "CME update pipeline exited with an error",
+                    extra=payload,
+                )
             
         except subprocess.TimeoutExpired:
-            self.send_error_json(504, "CME Update pipeline timed out (took longer than 120s)")
+            self.send_error_json(
+                504,
+                "PIPELINE_TIMEOUT",
+                "CME update pipeline exceeded the 120-second timeout",
+                retryable=True,
+            )
         except Exception as e:
-            self.send_error_json(500, f"Error executing CME update pipeline: {str(e)}")
+            self.log_error(
+                "[request_id=%s] Error executing CME pipeline: %s",
+                self.request_id,
+                e,
+            )
+            self.send_error_json(
+                500,
+                "PIPELINE_EXECUTION_FAILED",
+                "Unable to execute the CME update pipeline",
+            )
 
-    def send_error_json(self, status_code, message):
+    def send_json(self, status_code, payload):
+        content = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(content)))
         self.end_headers()
-        self.wfile.write(json.dumps({"error": message}).encode('utf-8'))
+        self.wfile.write(content)
 
-def run(server_class=HTTPServer, handler_class=DashboardHandler, port=PORT):
-    server_address = ('', port)
+    def send_error_json(
+        self,
+        status_code,
+        code,
+        message,
+        retryable=False,
+        extra=None,
+    ):
+        payload = dict(extra or {})
+        payload["error"] = {
+            "code": code,
+            "message": message,
+            "request_id": self.request_id,
+            "retryable": retryable,
+        }
+        self.send_json(status_code, payload)
+
+def run(server_class=ThreadingHTTPServer, handler_class=DashboardHandler, port=PORT, host=HOST):
+    server_address = (host, port)
     httpd = server_class(server_address, handler_class)
-    print(f"Option Levels Dashboard server running at http://localhost:{port}/")
+    print(f"Option Levels Dashboard server running at http://{host}:{port}/")
     
     # Trigger an immediate sync check on startup
     try:
         print("[Sync] Running initial startup sync check...")
-        sync_today_files_from_github()
+        schedule_today_files_sync()
     except Exception as e:
         print(f"[Sync] Error during startup sync check: {e}")
         

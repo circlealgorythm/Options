@@ -1,6 +1,6 @@
 @echo off
 title CME GEX Dashboard
-cd /d "c:\Users\circlealgorythm\.antigravity\bot_grid\Dashboard"
+cd /d "%~dp0"
 echo Starting Option Levels Dashboard...
-start "" "http://localhost:8080"
+start "" "http://127.0.0.1:8080"
 python run_dashboard.py

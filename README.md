@@ -138,7 +138,13 @@ Start the local HTTP server to view interactive Gamma curves:
 ```bash
 python Dashboard/run_dashboard.py
 ```
-Navigate to `http://localhost:8080` in your web browser.
+Navigate to `http://127.0.0.1:8080` in your web browser.
+
+The server binds to `127.0.0.1` by default. Set `DASHBOARD_HOST` only when
+remote access is intentionally required. GitHub level synchronization runs in
+the background, and spot adaptation is applied only when synchronized spot and
+futures references pass the basis sanity check. XAU remains on the CME futures
+reference when no trustworthy XAU/USD spot feed is available.
 
 ### 3. MetaTrader 5 Integration
 1. Move `CME_GEX_Levels_Indicator.mq5` to your MT5 directory `/MQL5/Indicators/`.
