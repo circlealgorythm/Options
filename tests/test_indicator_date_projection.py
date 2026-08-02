@@ -46,3 +46,21 @@ def test_labels_start_near_lines_and_collisions_use_opposite_sides():
     assert "ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER" in source
     assert "datetime flip_txt_time = time_start + 1200;" in source
     assert "datetime label_time = time_start + 1200;" in source
+
+
+def test_indicator_exports_the_final_visible_mt5_level_selection():
+    source = INDICATOR_PATH.read_text(encoding="utf-8")
+    export_block = source.split("void ExportIndicatorLevelsManifest", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+
+    assert "input bool     InpExportIndicatorLevels = true;" in source
+    assert "if(!draw_rows[i])" in export_block
+    assert '"coordinate_system\\\":\\\"MT5_SPOT' in export_block
+    assert "context.fw_offset" in export_block
+    assert "context.daily_call_strike + context.fw_offset + daily_call_settle" in export_block
+    assert "context.daily_put_strike + context.fw_offset - daily_put_settle" in export_block
+    assert "ExportIndicatorLevelsManifest(date_str, rows, draw_rows" in source
+    assert source.index("ExportIndicatorLevelsManifest(date_str, rows, draw_rows") > source.index(
+        "while(visible_rows < max_visible_rows)"
+    )

@@ -25,6 +25,11 @@ try:
         week_start_for,
         write_analysis_payload,
     )
+    from .indicator_levels_store import (
+        DEFAULT_INDICATOR_LEVELS_DIR,
+        IndicatorLevelsError,
+        load_indicator_manifest,
+    )
 except ImportError:  # Direct execution: python Dashboard/run_dashboard.py
     from analysis_store import (
         AnalysisStoreError,
@@ -34,12 +39,21 @@ except ImportError:  # Direct execution: python Dashboard/run_dashboard.py
         week_start_for,
         write_analysis_payload,
     )
+    from indicator_levels_store import (
+        DEFAULT_INDICATOR_LEVELS_DIR,
+        IndicatorLevelsError,
+        load_indicator_manifest,
+    )
 
 PORT = 8080
 HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
 ANALYSIS_PATH = os.path.join(BASE_DIR, "analysis.json")
+INDICATOR_LEVELS_DIR = os.environ.get(
+    "MT5_INDICATOR_LEVELS_DIR",
+    str(DEFAULT_INDICATOR_LEVELS_DIR),
+)
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 SUPPORTED_CURRENCIES = frozenset({"EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "USDCAD"})
 ANALYSIS_STORE_LOCK = threading.Lock()
@@ -401,6 +415,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.handle_get_data(parsed_url.query)
         elif path == '/api/analysis':
             self.handle_get_analysis(parsed_url.query)
+        elif path == '/api/indicator-levels':
+            self.handle_get_indicator_levels(parsed_url.query)
         elif path == '/api/status':
             self.handle_get_status()
         elif path.startswith('/api/'):
@@ -845,6 +861,64 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "week_end": report.get("week_end"),
             })
         self.send_json(200, response)
+
+    def handle_get_indicator_levels(self, query_str):
+        params = parse_qs(query_str)
+        currency = params.get("currency", [None])[0]
+        selected_date = params.get("date", [None])[0]
+
+        if currency is None or currency.upper() not in SUPPORTED_CURRENCIES:
+            self.send_error_json(
+                400,
+                "INVALID_CURRENCY",
+                f"Unsupported currency: {currency}",
+            )
+            return
+        currency = currency.upper()
+        if selected_date is None:
+            self.send_error_json(
+                400,
+                "INDICATOR_LEVELS_DATE_REQUIRED",
+                "Indicator-level date is required",
+            )
+            return
+        try:
+            datetime.date.fromisoformat(selected_date)
+        except ValueError:
+            self.send_error_json(
+                400,
+                "INVALID_DATE",
+                f"Invalid date format: {selected_date}",
+            )
+            return
+
+        try:
+            payload = load_indicator_manifest(
+                INDICATOR_LEVELS_DIR,
+                currency,
+                selected_date,
+            )
+        except FileNotFoundError:
+            self.send_error_json(
+                404,
+                "INDICATOR_LEVELS_NOT_FOUND",
+                f"No MT5 indicator-level manifest for {currency} on {selected_date}",
+            )
+            return
+        except IndicatorLevelsError as exc:
+            self.log_error(
+                "[request_id=%s] Invalid indicator-level manifest: %s",
+                self.request_id,
+                exc,
+            )
+            self.send_error_json(
+                500,
+                "INVALID_INDICATOR_LEVELS",
+                "MT5 indicator-level manifest failed validation",
+            )
+            return
+
+        self.send_json(200, payload)
 
     def handle_get_status(self):
         try:

@@ -14,6 +14,7 @@ from Dashboard import run_dashboard
 def dashboard_server(tmp_path, monkeypatch):
     monkeypatch.setattr(run_dashboard, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(run_dashboard, "ANALYSIS_PATH", str(tmp_path / "analysis.json"))
+    monkeypatch.setattr(run_dashboard, "INDICATOR_LEVELS_DIR", str(tmp_path / "indicator-levels"))
     monkeypatch.setattr(run_dashboard, "schedule_today_files_sync", lambda: False)
     server = run_dashboard.ThreadingHTTPServer(
         ("127.0.0.1", 0),
@@ -162,3 +163,110 @@ def test_analysis_api_rejects_unknown_period(dashboard_server):
     payload = json.loads(exc_info.value.read().decode("utf-8"))
     assert exc_info.value.code == 400
     assert payload["error"]["code"] == "INVALID_ANALYSIS_PERIOD"
+
+
+def test_indicator_levels_api_returns_only_exact_mt5_manifest(dashboard_server):
+    base_url, data_dir = dashboard_server
+    manifest_dir = data_dir / "indicator-levels"
+    manifest_dir.mkdir()
+    report_date = datetime.date.today().isoformat()
+    payload = {
+        "schema_version": 1,
+        "producer": "CME_GEX_Levels_Indicator",
+        "asset": "XAU",
+        "report_date": report_date,
+        "generated_at": f"{report_date}T09:00:00",
+        "source_csv": f"GEX_XAUUSD_{report_date}.csv",
+        "coordinate_system": "MT5_SPOT",
+        "selection": {
+            "filter_mode": "absolute",
+            "min_gex_filter": 1000.0,
+            "active_gex_filter": 1000.0,
+            "filter_reference_abs_gex": 5000.0,
+            "min_gex_percent": 15.0,
+            "max_visible_rows": 32,
+            "max_strike_distance_percent": 12.0,
+            "max_key_distance_percent": 18.0,
+            "visible_count": 1,
+        },
+        "market": {
+            "futures_spot": 4100.0,
+            "mt5_spot_reference": 4098.0,
+            "fw_offset": -2.0,
+            "fw_offset_status": "mt5_d1_open",
+        },
+        "expiries": {
+            "daily_month": "AUG26",
+            "daily_expiry": report_date,
+            "global_month": "DEC26",
+            "global_expiry": "2026-11-23",
+        },
+        "quality": {
+            "quality_status": "WARN",
+            "quality_reasons": "ESTIMATED_EXPIRY_ALIAS",
+            "anomaly_status": "OK",
+            "anomaly_codes": "NONE",
+            "anomaly_details": "NONE",
+            "anomaly_baseline_date": "NONE",
+            "gamma_flip_status": "FOUND",
+        },
+        "diagnostics": {
+            "spot_source": "PUT_CALL_PARITY",
+            "iv_source": "WEIGHTED_ATM",
+            "iv_expiry": report_date,
+            "iv_dte": 0,
+            "estimated_expiry_types": "MM1",
+        },
+        "key_levels": {
+            "spot_reference": {"chart_price": 4098.0},
+            "zero_gamma": {"chart_price": 4075.0},
+            "daily_call_mdd": {
+                "chart_price": 4120.0,
+                "strike": 4100.0,
+                "settle": 22.0,
+                "oi": 10.0,
+            },
+            "daily_put_mdd": {
+                "chart_price": 4076.0,
+                "strike": 4100.0,
+                "settle": 22.0,
+                "oi": 11.0,
+            },
+            "global_call": None,
+            "global_put": None,
+            "max_abs_gamma": {"chart_price": 4098.0, "strike": 4100.0, "abs_gamma": 9.0},
+            "r68_high": {"chart_price": 4140.0},
+            "r68_low": {"chart_price": 4056.0},
+            "r95_high": {"chart_price": 4182.0},
+            "r95_low": {"chart_price": 4014.0},
+        },
+        "visible_strikes": [{
+            "strike": 4100.0,
+            "chart_price": 4098.0,
+            "total_gex": 100.0,
+            "total_abs_gamma": 9.0,
+            "gex_strength_percent": 100,
+            "ag_strength_percent": 100,
+            "roles": ["daily_call", "daily_put", "max_abs_gamma"],
+        }],
+    }
+    (manifest_dir / f"GEX_XAU_{report_date}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with urllib.request.urlopen(
+        f"{base_url}/api/indicator-levels?currency=XAU&date={report_date}"
+    ) as response:
+        exact = json.loads(response.read().decode("utf-8"))
+
+    assert exact["coordinate_system"] == "MT5_SPOT"
+    assert exact["market"]["fw_offset"] == -2.0
+    missing_date = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(
+            f"{base_url}/api/indicator-levels?currency=XAU&date={missing_date}"
+        )
+    missing = json.loads(exc_info.value.read().decode("utf-8"))
+    assert exc_info.value.code == 404
+    assert missing["error"]["code"] == "INDICATOR_LEVELS_NOT_FOUND"

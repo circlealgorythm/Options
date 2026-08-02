@@ -150,3 +150,15 @@ reference when no trustworthy XAU/USD spot feed is available.
 1. Move `CME_GEX_Levels_Indicator.mq5` to your MT5 directory `/MQL5/Indicators/`.
 2. Compile the indicator in MetaEditor (`F4`).
 3. Drag the indicator to your chart, allow WebRequests to `https://raw.githubusercontent.com`, and enter your GitHub PAT token.
+
+After the indicator finishes drawing a session, it exports the exact visible
+MT5 coordinates to `MQL5/Files/GEX/IndicatorLevels/`. These manifests include
+the actual chart `fw_offset`, selection settings, expiries, quality flags, key
+levels, and the final visible GEX/AG rows. On-demand analysis can read an exact
+date through `/api/indicator-levels?currency=XAU&date=YYYY-MM-DD` or:
+
+```bash
+python Dashboard/indicator_levels_store.py XAU YYYY-MM-DD
+```
+
+The lookup is fail-closed: it never substitutes a manifest from another date.

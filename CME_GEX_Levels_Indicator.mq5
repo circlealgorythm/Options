@@ -65,6 +65,7 @@ input double   InpMinLabelGapPercent = 0.12;       // Minimum vertical label gap
 input bool     InpFadeHistory = true;              // Visually mute older sessions
 input int      InpZoneTintPercent = 14;            // Volatility-zone tint strength against chart background
 input bool     InpDrawDaySeparators = true;        // Draw subtle trading-day separators
+input bool     InpExportIndicatorLevels = true;    // Export exact visible MT5 levels for on-demand analysis
 
 input group "--- Market Boundaries (1st Order) ---"
 
@@ -715,7 +716,7 @@ bool FetchAndParseDate(string date_str, string &out_month)
 
 //+------------------------------------------------------------------+
 
-struct OptionRow {
+struct OptionRow {
    double strike;
    double total_gex;
    double total_abs_gamma;
@@ -725,7 +726,288 @@ struct OptionRow {
    double daily_put_oi;
    double global_call_oi;
    double global_put_oi;
-};
+};
+
+struct IndicatorManifestContext {
+   double fw_offset;
+   string fw_offset_status;
+   double mt5_spot_reference;
+   double futures_spot;
+   double gamma_flip;
+   string gamma_flip_status;
+   double r68_high;
+   double r68_low;
+   double r95_high;
+   double r95_low;
+   double daily_call_strike;
+   double daily_call_oi;
+   double daily_put_strike;
+   double daily_put_oi;
+   double global_call_strike;
+   double global_call_oi;
+   double global_put_strike;
+   double global_put_oi;
+   double max_gamma_strike;
+   double label_max_abs_gex;
+   double label_max_abs_gamma;
+   double active_filter;
+   string filter_mode;
+   double filter_reference_abs_gex;
+   int max_visible_rows;
+   double max_distance_percent;
+   double max_key_distance_percent;
+   string daily_month;
+   string daily_expiry;
+   string global_month;
+   string global_expiry;
+   string quality_status;
+   string quality_reasons;
+   string anomaly_status;
+   string anomaly_codes;
+   string anomaly_details;
+   string anomaly_baseline_date;
+   string spot_source;
+   string iv_source;
+   string iv_expiry;
+   int iv_dte;
+   string estimated_expiry_types;
+};
+
+string JsonEscape(string value)
+{
+   StringReplace(value, "\\", "\\\\");
+   StringReplace(value, "\"", "\\\"");
+   StringReplace(value, "\r", "\\r");
+   StringReplace(value, "\n", "\\n");
+   StringReplace(value, "\t", "\\t");
+   return value;
+}
+
+string JsonNumber(double value)
+{
+   return DoubleToString(value, 10);
+}
+
+string IsoDateTime(datetime value)
+{
+   MqlDateTime parts;
+   TimeToStruct(value, parts);
+   return StringFormat("%04d-%02d-%02dT%02d:%02d:%02d",
+                       parts.year, parts.mon, parts.day,
+                       parts.hour, parts.min, parts.sec);
+}
+
+string ManifestAssetCode()
+{
+   if(g_base_currency == "CAD")
+      return "USDCAD";
+   return g_base_currency;
+}
+
+string ManifestSourceCsv(string asset, string date_str)
+{
+   if(asset == "USDCAD")
+      return "GEX_USDCAD_" + date_str + ".csv";
+   return "GEX_" + asset + "USD_" + date_str + ".csv";
+}
+
+string PriceLevelJson(double chart_price)
+{
+   if(chart_price <= 0.0)
+      return "null";
+   return "{\"chart_price\":" + JsonNumber(chart_price) + "}";
+}
+
+string StrikeLevelJson(double chart_price, double strike, double oi)
+{
+   if(chart_price <= 0.0 || strike <= 0.0)
+      return "null";
+   return "{\"chart_price\":" + JsonNumber(chart_price) +
+          ",\"strike\":" + JsonNumber(strike) +
+          ",\"oi\":" + JsonNumber(oi) + "}";
+}
+
+string GammaLevelJson(double chart_price, double strike, double abs_gamma)
+{
+   if(chart_price <= 0.0 || strike <= 0.0 || abs_gamma <= 0.0)
+      return "null";
+   return "{\"chart_price\":" + JsonNumber(chart_price) +
+          ",\"strike\":" + JsonNumber(strike) +
+          ",\"abs_gamma\":" + JsonNumber(abs_gamma) + "}";
+}
+
+string MddLevelJson(double chart_price, double strike, double settle, double oi)
+{
+   if(chart_price <= 0.0 || strike <= 0.0 || settle <= 0.0)
+      return "null";
+   return "{\"chart_price\":" + JsonNumber(chart_price) +
+          ",\"strike\":" + JsonNumber(strike) +
+          ",\"settle\":" + JsonNumber(settle) +
+          ",\"oi\":" + JsonNumber(oi) + "}";
+}
+
+void ExportIndicatorLevelsManifest(string date_str,
+                                   OptionRow &rows[],
+                                   bool &draw_rows[],
+                                   int valid_rows,
+                                   IndicatorManifestContext &context)
+{
+   if(!InpExportIndicatorLevels)
+      return;
+
+   string asset = ManifestAssetCode();
+   int visible_count = 0;
+   bool daily_call_visible = false;
+   bool daily_put_visible = false;
+   bool global_call_visible = false;
+   bool global_put_visible = false;
+   bool max_gamma_visible = false;
+   double daily_call_settle = 0.0;
+   double daily_put_settle = 0.0;
+
+   for(int i = 0; i < valid_rows; i++)
+   {
+      if(!draw_rows[i])
+         continue;
+      visible_count++;
+      double strike = rows[i].strike;
+      if(strike == context.daily_call_strike && context.daily_call_oi > 0.0)
+      {
+         daily_call_visible = true;
+         daily_call_settle = rows[i].daily_call_settle;
+      }
+      if(strike == context.daily_put_strike && context.daily_put_oi > 0.0)
+      {
+         daily_put_visible = true;
+         daily_put_settle = rows[i].daily_put_settle;
+      }
+      if(strike == context.global_call_strike && context.global_call_oi > 0.0)
+         global_call_visible = true;
+      if(strike == context.global_put_strike && context.global_put_oi > 0.0)
+         global_put_visible = true;
+      if(strike == context.max_gamma_strike && context.label_max_abs_gamma > 0.0)
+         max_gamma_visible = true;
+   }
+
+   string json = "{";
+   json += "\"schema_version\":1,";
+   json += "\"producer\":\"CME_GEX_Levels_Indicator\",";
+   json += "\"asset\":\"" + JsonEscape(asset) + "\",";
+   json += "\"report_date\":\"" + JsonEscape(date_str) + "\",";
+   json += "\"generated_at\":\"" + IsoDateTime(TimeCurrent()) + "\",";
+   json += "\"source_csv\":\"" + JsonEscape(ManifestSourceCsv(asset, date_str)) + "\",";
+   json += "\"coordinate_system\":\"MT5_SPOT\",";
+   json += "\"selection\":{";
+   json += "\"filter_mode\":\"" + JsonEscape(context.filter_mode) + "\",";
+   json += "\"min_gex_filter\":" + JsonNumber(InpMinGexFilter) + ",";
+   json += "\"active_gex_filter\":" + JsonNumber(context.active_filter) + ",";
+   json += "\"filter_reference_abs_gex\":" + JsonNumber(context.filter_reference_abs_gex) + ",";
+   json += "\"min_gex_percent\":" + JsonNumber(InpMinGexPercent) + ",";
+   json += "\"max_visible_rows\":" + IntegerToString(context.max_visible_rows) + ",";
+   json += "\"max_strike_distance_percent\":" + JsonNumber(context.max_distance_percent) + ",";
+   json += "\"max_key_distance_percent\":" + JsonNumber(context.max_key_distance_percent) + ",";
+   json += "\"visible_count\":" + IntegerToString(visible_count) + "},";
+   json += "\"market\":{";
+   json += "\"futures_spot\":" + JsonNumber(context.futures_spot) + ",";
+   json += "\"mt5_spot_reference\":" + JsonNumber(context.mt5_spot_reference) + ",";
+   json += "\"fw_offset\":" + JsonNumber(context.fw_offset) + ",";
+   json += "\"fw_offset_status\":\"" + JsonEscape(context.fw_offset_status) + "\"},";
+   json += "\"expiries\":{";
+   json += "\"daily_month\":\"" + JsonEscape(context.daily_month) + "\",";
+   json += "\"daily_expiry\":\"" + JsonEscape(context.daily_expiry) + "\",";
+   json += "\"global_month\":\"" + JsonEscape(context.global_month) + "\",";
+   json += "\"global_expiry\":\"" + JsonEscape(context.global_expiry) + "\"},";
+   json += "\"quality\":{";
+   json += "\"quality_status\":\"" + JsonEscape(context.quality_status) + "\",";
+   json += "\"quality_reasons\":\"" + JsonEscape(context.quality_reasons) + "\",";
+   json += "\"anomaly_status\":\"" + JsonEscape(context.anomaly_status) + "\",";
+   json += "\"anomaly_codes\":\"" + JsonEscape(context.anomaly_codes) + "\",";
+   json += "\"anomaly_details\":\"" + JsonEscape(context.anomaly_details) + "\",";
+   json += "\"anomaly_baseline_date\":\"" + JsonEscape(context.anomaly_baseline_date) + "\",";
+   json += "\"gamma_flip_status\":\"" + JsonEscape(context.gamma_flip_status) + "\"},";
+   json += "\"diagnostics\":{";
+   json += "\"spot_source\":\"" + JsonEscape(context.spot_source) + "\",";
+   json += "\"iv_source\":\"" + JsonEscape(context.iv_source) + "\",";
+   json += "\"iv_expiry\":\"" + JsonEscape(context.iv_expiry) + "\",";
+   json += "\"iv_dte\":" + IntegerToString(context.iv_dte) + ",";
+   json += "\"estimated_expiry_types\":\"" + JsonEscape(context.estimated_expiry_types) + "\"},";
+   json += "\"key_levels\":{";
+   json += "\"spot_reference\":" + PriceLevelJson(context.mt5_spot_reference) + ",";
+   json += "\"zero_gamma\":" + PriceLevelJson(context.gamma_flip > 0.0 ? context.gamma_flip + context.fw_offset : 0.0) + ",";
+   json += "\"daily_call_mdd\":" + MddLevelJson(
+      daily_call_visible ? context.daily_call_strike + context.fw_offset + daily_call_settle : 0.0,
+      context.daily_call_strike, daily_call_settle, context.daily_call_oi) + ",";
+   json += "\"daily_put_mdd\":" + MddLevelJson(
+      daily_put_visible ? context.daily_put_strike + context.fw_offset - daily_put_settle : 0.0,
+      context.daily_put_strike, daily_put_settle, context.daily_put_oi) + ",";
+   json += "\"global_call\":" + StrikeLevelJson(
+      global_call_visible ? context.global_call_strike + context.fw_offset : 0.0,
+      context.global_call_strike, context.global_call_oi) + ",";
+   json += "\"global_put\":" + StrikeLevelJson(
+      global_put_visible ? context.global_put_strike + context.fw_offset : 0.0,
+      context.global_put_strike, context.global_put_oi) + ",";
+   json += "\"max_abs_gamma\":" + GammaLevelJson(
+      max_gamma_visible ? context.max_gamma_strike + context.fw_offset : 0.0,
+      context.max_gamma_strike, context.label_max_abs_gamma) + ",";
+   json += "\"r68_high\":" + PriceLevelJson(context.r68_high > 0.0 ? context.r68_high + context.fw_offset : 0.0) + ",";
+   json += "\"r68_low\":" + PriceLevelJson(context.r68_low > 0.0 ? context.r68_low + context.fw_offset : 0.0) + ",";
+   json += "\"r95_high\":" + PriceLevelJson(context.r95_high > 0.0 ? context.r95_high + context.fw_offset : 0.0) + ",";
+   json += "\"r95_low\":" + PriceLevelJson(context.r95_low > 0.0 ? context.r95_low + context.fw_offset : 0.0) + "},";
+   json += "\"visible_strikes\":[";
+
+   bool first_row = true;
+   for(int i = 0; i < valid_rows; i++)
+   {
+      if(!draw_rows[i])
+         continue;
+      if(!first_row)
+         json += ",";
+      first_row = false;
+      double strike = rows[i].strike;
+      double gex_ratio = context.label_max_abs_gex > 0.0
+                         ? MathAbs(rows[i].total_gex) / context.label_max_abs_gex : 1.0;
+      double ag_ratio = context.label_max_abs_gamma > 0.0
+                        ? rows[i].total_abs_gamma / context.label_max_abs_gamma : 1.0;
+      gex_ratio = MathMin(1.0, MathMax(0.0, gex_ratio));
+      ag_ratio = MathMin(1.0, MathMax(0.0, ag_ratio));
+      string roles = "";
+      if(strike == context.daily_call_strike && context.daily_call_oi > 0.0)
+         roles += "\"daily_call\",";
+      if(strike == context.daily_put_strike && context.daily_put_oi > 0.0)
+         roles += "\"daily_put\",";
+      if(strike == context.global_call_strike && context.global_call_oi > 0.0)
+         roles += "\"global_call\",";
+      if(strike == context.global_put_strike && context.global_put_oi > 0.0)
+         roles += "\"global_put\",";
+      if(strike == context.max_gamma_strike && context.label_max_abs_gamma > 0.0)
+         roles += "\"max_abs_gamma\",";
+      if(StringLen(roles) > 0)
+         roles = StringSubstr(roles, 0, StringLen(roles) - 1);
+      json += "{\"strike\":" + JsonNumber(strike) +
+              ",\"chart_price\":" + JsonNumber(strike + context.fw_offset) +
+              ",\"total_gex\":" + JsonNumber(rows[i].total_gex) +
+              ",\"total_abs_gamma\":" + JsonNumber(rows[i].total_abs_gamma) +
+              ",\"gex_strength_percent\":" + IntegerToString((int)MathRound(gex_ratio * 100.0)) +
+              ",\"ag_strength_percent\":" + IntegerToString((int)MathRound(ag_ratio * 100.0)) +
+              ",\"roles\":[" + roles + "]}";
+   }
+   json += "]}";
+
+   string folder = "GEX\\IndicatorLevels";
+   FolderCreate(folder);
+   string path = folder + "\\GEX_" + asset + "_" + date_str + ".json";
+   ResetLastError();
+   int handle = FileOpen(path, FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(handle == INVALID_HANDLE)
+   {
+      PrintFormat("Failed to export indicator-level manifest %s. Error: %d", path, GetLastError());
+      return;
+   }
+   FileWriteString(handle, json);
+   FileFlush(handle);
+   FileClose(handle);
+   PrintFormat("Exported %d exact visible indicator levels to Files\\%s", visible_count, path);
+}
 
 //+------------------------------------------------------------------+
 //| Format volume numbers to K/M format                              |
@@ -946,8 +1228,23 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    int idx_r95_high = FindCSVColumn(header_columns, "R95_High");
    int idx_r95_low = FindCSVColumn(header_columns, "R95_Low");
    int idx_global_month = FindCSVColumn(header_columns, "Global_Month");
+   int idx_daily_month = FindCSVColumn(header_columns, "Daily_Month");
+   int idx_daily_expiry = FindCSVColumn(header_columns, "Daily_Expiry");
+   int idx_global_expiry = FindCSVColumn(header_columns, "Global_Expiry");
    int idx_futures_spot = FindCSVColumn(header_columns, "Futures_Spot");
    int idx_gamma_flip = FindCSVColumn(header_columns, "Gamma_Flip");
+   int idx_gamma_flip_status = FindCSVColumn(header_columns, "Gamma_Flip_Status");
+   int idx_quality_status = FindCSVColumn(header_columns, "Quality_Status");
+   int idx_quality_reasons = FindCSVColumn(header_columns, "Quality_Reasons");
+   int idx_anomaly_status = FindCSVColumn(header_columns, "Anomaly_Status");
+   int idx_anomaly_codes = FindCSVColumn(header_columns, "Anomaly_Codes");
+   int idx_anomaly_details = FindCSVColumn(header_columns, "Anomaly_Details");
+   int idx_anomaly_baseline_date = FindCSVColumn(header_columns, "Anomaly_Baseline_Date");
+   int idx_spot_source = FindCSVColumn(header_columns, "Spot_Source");
+   int idx_iv_source = FindCSVColumn(header_columns, "IV_Source");
+   int idx_iv_expiry = FindCSVColumn(header_columns, "IV_Expiry");
+   int idx_iv_dte = FindCSVColumn(header_columns, "IV_DTE");
+   int idx_estimated_expiry_types = FindCSVColumn(header_columns, "Estimated_Expiry_Types");
    if(idx_strike < 0 || idx_total_gex < 0 || idx_total_abs_gamma < 0 ||
       idx_daily_call_settle < 0 || idx_daily_call_oi < 0 ||
       idx_daily_put_settle < 0 || idx_daily_put_oi < 0 ||
@@ -1035,9 +1332,11 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       if(gex_array[idx] > 0.0)
          filter_reference_abs_gex = gex_array[idx];
    }
-   double active_filter = InpMinGexFilter;
-   if(InpMinGexFilter <= 0.0 || file_max_abs_gex <= InpMinGexFilter)
-   {
+   double active_filter = InpMinGexFilter;
+   string filter_mode = "absolute";
+   if(InpMinGexFilter <= 0.0 || file_max_abs_gex <= InpMinGexFilter)
+   {
+      filter_mode = "relative_percent";
       active_filter = filter_reference_abs_gex * (InpMinGexPercent / 100.0); // relative % of robust max GEX
       PrintFormat("CME GEX: file_max_abs_gex (%.4f), filter_reference_abs_gex (%.4f), InpMinGexFilter (%.4f). Using relative noise filter (%.1f%%): %.6f", 
                   file_max_abs_gex, filter_reference_abs_gex, InpMinGexFilter, InpMinGexPercent, active_filter);
@@ -1051,8 +1350,24 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    double r68_low = 0.0;
    double r95_high = 0.0;
    double r95_low = 0.0;
-   double futures_spot = 0.0;
-   double gamma_flip = 0.0;
+   double futures_spot = 0.0;
+   double gamma_flip = 0.0;
+   string gamma_flip_status = "UNKNOWN";
+   string daily_month = "UNKNOWN";
+   string daily_expiry = "UNKNOWN";
+   string global_expiry = "UNKNOWN";
+   string quality_status = "UNKNOWN";
+   string quality_reasons = "NONE";
+   string anomaly_status = "UNKNOWN";
+   string anomaly_codes = "NONE";
+   string anomaly_details = "NONE";
+   string anomaly_baseline_date = "NONE";
+   string spot_source = "UNKNOWN";
+   string iv_source = "UNKNOWN";
+   string iv_expiry = "UNKNOWN";
+   int iv_dte = 0;
+   string estimated_expiry_types = "NONE";
+   bool metadata_loaded = false;
    OptionRow rows[];
    if(ArrayResize(rows, total_lines) == -1)
    {
@@ -1080,18 +1395,49 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       double d_put_oi = StringToDouble(columns[idx_daily_put_oi]);
       double g_call_oi = StringToDouble(columns[idx_global_call_oi]);
       double g_put_oi = StringToDouble(columns[idx_global_put_oi]);
-      if(idx_r68_high >= 0 && idx_r68_low >= 0 && idx_r95_high >= 0 && idx_r95_low >= 0 && r68_high == 0.0)
+      if(!metadata_loaded)
       {
-         r68_high = StringToDouble(columns[idx_r68_high]);
-         r68_low = StringToDouble(columns[idx_r68_low]);
-         r95_high = StringToDouble(columns[idx_r95_high]);
-         r95_low = StringToDouble(columns[idx_r95_low]);
+         metadata_loaded = true;
+         if(idx_r68_high >= 0) r68_high = StringToDouble(columns[idx_r68_high]);
+         if(idx_r68_low >= 0) r68_low = StringToDouble(columns[idx_r68_low]);
+         if(idx_r95_high >= 0) r95_high = StringToDouble(columns[idx_r95_high]);
+         if(idx_r95_low >= 0) r95_low = StringToDouble(columns[idx_r95_low]);
          if(idx_global_month >= 0)
             out_global_month = columns[idx_global_month];
+         if(idx_daily_month >= 0)
+            daily_month = columns[idx_daily_month];
+         if(idx_daily_expiry >= 0)
+            daily_expiry = columns[idx_daily_expiry];
+         if(idx_global_expiry >= 0)
+            global_expiry = columns[idx_global_expiry];
          if(idx_futures_spot >= 0)
             futures_spot = StringToDouble(columns[idx_futures_spot]);
          if(idx_gamma_flip >= 0)
             gamma_flip = StringToDouble(columns[idx_gamma_flip]);
+         if(idx_gamma_flip_status >= 0)
+            gamma_flip_status = columns[idx_gamma_flip_status];
+         if(idx_quality_status >= 0)
+            quality_status = columns[idx_quality_status];
+         if(idx_quality_reasons >= 0)
+            quality_reasons = columns[idx_quality_reasons];
+         if(idx_anomaly_status >= 0)
+            anomaly_status = columns[idx_anomaly_status];
+         if(idx_anomaly_codes >= 0)
+            anomaly_codes = columns[idx_anomaly_codes];
+         if(idx_anomaly_details >= 0)
+            anomaly_details = columns[idx_anomaly_details];
+         if(idx_anomaly_baseline_date >= 0)
+            anomaly_baseline_date = columns[idx_anomaly_baseline_date];
+         if(idx_spot_source >= 0)
+            spot_source = columns[idx_spot_source];
+         if(idx_iv_source >= 0)
+            iv_source = columns[idx_iv_source];
+         if(idx_iv_expiry >= 0)
+            iv_expiry = columns[idx_iv_expiry];
+         if(idx_iv_dte >= 0)
+            iv_dte = (int)StringToInteger(columns[idx_iv_dte]);
+         if(idx_estimated_expiry_types >= 0)
+            estimated_expiry_types = columns[idx_estimated_expiry_types];
       }
       // Check if this is a key level that must always be shown
       bool is_key_strike = (strike == max_daily_call_oi_strike && max_daily_call_oi > 0.0) ||
@@ -1147,8 +1493,9 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          ObjectSetString(0, separator_name, OBJPROP_TOOLTIP, date_str);
       }
    }
-   double fw_offset = InpForwardPoints * Point();
-   if(InpAutoSpotAdjust && futures_spot > 0.0)
+   double fw_offset = InpForwardPoints * Point();
+   string fw_offset_status = "manual";
+   if(InpAutoSpotAdjust && futures_spot > 0.0)
    {
       int shift = -1;
       MqlDateTime now_dt;
@@ -1161,15 +1508,22 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          double candidate_offset = spot_price - futures_spot;
          double candidate_pct = MathAbs(candidate_offset) / futures_spot * 100.0;
          if(InpMaxAutoOffsetPercent <= 0.0 || candidate_pct <= InpMaxAutoOffsetPercent)
+         {
             fw_offset = candidate_offset;
+            fw_offset_status = "mt5_d1_open";
+         }
          else
+         {
+            fw_offset_status = "auto_rejected_manual_fallback";
             PrintFormat("Warning: Rejected implausible auto offset for %s: %.5f (%.2f%%). Keeping manual offset %.5f.",
                         date_str, candidate_offset, candidate_pct, fw_offset);
-      }
-      else
-      {
-         PrintFormat("Warning: Failed to calculate fw_offset for %s. shift=%d, spot_price=%.5f, futures_spot=%.5f. Using default fw_offset = %.5f", 
-                     date_str, shift, spot_price, futures_spot, fw_offset);
+         }
+      }
+      else
+      {
+         fw_offset_status = "auto_unavailable_manual_fallback";
+         PrintFormat("Warning: Failed to calculate fw_offset for %s. shift=%d, spot_price=%.5f, futures_spot=%.5f. Using default fw_offset = %.5f",
+                     date_str, shift, spot_price, futures_spot, fw_offset);
       }
    }
    bool draw_rows[];
@@ -1179,9 +1533,11 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    int max_visible_rows = GetMaxVisibleGexLevels();
    double max_distance_pct = GetMaxStrikeDistancePercent();
    double max_key_distance_pct = GetMaxKeyDistancePercent();
-   double reference_spot = futures_spot;
-   if(reference_spot <= 0.0)
-      reference_spot = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   double reference_spot = futures_spot;
+   if(reference_spot <= 0.0)
+      reference_spot = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   double mt5_spot_reference = futures_spot > 0.0
+                               ? futures_spot + fw_offset : reference_spot;
    int visible_rows = 0;
    if(reference_spot > 0.0 && max_visible_rows > 0)
    {
@@ -1250,8 +1606,54 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    }
    if(display_max_abs_gex > 0.0)
       max_abs_gex = display_max_abs_gex;
-   if(display_max_abs_gamma > 0.0)
-      max_abs_gamma = display_max_abs_gamma;
+   if(display_max_abs_gamma > 0.0)
+      max_abs_gamma = display_max_abs_gamma;
+   if(gamma_flip_status == "UNKNOWN")
+      gamma_flip_status = gamma_flip > 0.0 ? "FOUND" : "NO_CROSSING";
+   IndicatorManifestContext manifest_context;
+   manifest_context.fw_offset = fw_offset;
+   manifest_context.fw_offset_status = fw_offset_status;
+   manifest_context.mt5_spot_reference = mt5_spot_reference;
+   manifest_context.futures_spot = futures_spot;
+   manifest_context.gamma_flip = gamma_flip;
+   manifest_context.gamma_flip_status = gamma_flip_status;
+   manifest_context.r68_high = r68_high;
+   manifest_context.r68_low = r68_low;
+   manifest_context.r95_high = r95_high;
+   manifest_context.r95_low = r95_low;
+   manifest_context.daily_call_strike = max_daily_call_oi_strike;
+   manifest_context.daily_call_oi = max_daily_call_oi;
+   manifest_context.daily_put_strike = max_daily_put_oi_strike;
+   manifest_context.daily_put_oi = max_daily_put_oi;
+   manifest_context.global_call_strike = max_global_call_oi_strike;
+   manifest_context.global_call_oi = max_global_call_oi;
+   manifest_context.global_put_strike = max_global_put_oi_strike;
+   manifest_context.global_put_oi = max_global_put_oi;
+   manifest_context.max_gamma_strike = max_gamma_strike;
+   manifest_context.label_max_abs_gex = label_max_abs_gex;
+   manifest_context.label_max_abs_gamma = label_max_abs_gamma;
+   manifest_context.active_filter = active_filter;
+   manifest_context.filter_mode = filter_mode;
+   manifest_context.filter_reference_abs_gex = filter_reference_abs_gex;
+   manifest_context.max_visible_rows = max_visible_rows;
+   manifest_context.max_distance_percent = max_distance_pct;
+   manifest_context.max_key_distance_percent = max_key_distance_pct;
+   manifest_context.daily_month = daily_month;
+   manifest_context.daily_expiry = daily_expiry;
+   manifest_context.global_month = out_global_month;
+   manifest_context.global_expiry = global_expiry;
+   manifest_context.quality_status = quality_status;
+   manifest_context.quality_reasons = quality_reasons;
+   manifest_context.anomaly_status = anomaly_status;
+   manifest_context.anomaly_codes = anomaly_codes;
+   manifest_context.anomaly_details = anomaly_details;
+   manifest_context.anomaly_baseline_date = anomaly_baseline_date;
+   manifest_context.spot_source = spot_source;
+   manifest_context.iv_source = iv_source;
+   manifest_context.iv_expiry = iv_expiry;
+   manifest_context.iv_dte = iv_dte;
+   manifest_context.estimated_expiry_types = estimated_expiry_types;
+   ExportIndicatorLevelsManifest(date_str, rows, draw_rows, valid_rows, manifest_context);
    int label_lane[];
    ArrayResize(label_lane, valid_rows);
    ArrayInitialize(label_lane, 0);
