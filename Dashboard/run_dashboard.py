@@ -334,7 +334,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "gamma_flip": 0.0,
                 "gamma_flip_status": "UNKNOWN",
                 "quality_status": "UNKNOWN",
+                "quality_reasons": "NONE",
                 "catalog_version": "UNKNOWN",
+                "spot_source": "UNKNOWN",
+                "spot_reference_month": "UNKNOWN",
+                "spot_fallback_details": "NONE",
+                "iv_source": "UNKNOWN",
+                "iv_expiry": "UNKNOWN",
+                "iv_dte": 0,
+                "iv_fallback_reason": "NONE",
                 "unknown_option_types": "NONE",
                 "estimated_expiry_types": "NONE",
             }
@@ -373,7 +381,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     gamma_flip_idx = headers.index("Gamma_Flip") if "Gamma_Flip" in headers else -1
                     gamma_status_idx = headers.index("Gamma_Flip_Status") if "Gamma_Flip_Status" in headers else -1
                     quality_status_idx = headers.index("Quality_Status") if "Quality_Status" in headers else -1
+                    quality_reasons_idx = headers.index("Quality_Reasons") if "Quality_Reasons" in headers else -1
                     catalog_version_idx = headers.index("Series_Catalog_Version") if "Series_Catalog_Version" in headers else -1
+                    spot_source_idx = headers.index("Spot_Source") if "Spot_Source" in headers else -1
+                    spot_reference_month_idx = headers.index("Spot_Reference_Month") if "Spot_Reference_Month" in headers else -1
+                    spot_fallback_idx = headers.index("Spot_Fallback_Details") if "Spot_Fallback_Details" in headers else -1
+                    iv_source_idx = headers.index("IV_Source") if "IV_Source" in headers else -1
+                    iv_expiry_idx = headers.index("IV_Expiry") if "IV_Expiry" in headers else -1
+                    iv_dte_idx = headers.index("IV_DTE") if "IV_DTE" in headers else -1
+                    iv_fallback_idx = headers.index("IV_Fallback_Reason") if "IV_Fallback_Reason" in headers else -1
                     unknown_types_idx = headers.index("Unknown_Option_Types") if "Unknown_Option_Types" in headers else -1
                     estimated_types_idx = headers.index("Estimated_Expiry_Types") if "Estimated_Expiry_Types" in headers else -1
                 except ValueError as ve:
@@ -406,7 +422,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             metadata["gamma_flip"] = float(parts[gamma_flip_idx])
                         if gamma_status_idx != -1: metadata["gamma_flip_status"] = parts[gamma_status_idx]
                         if quality_status_idx != -1: metadata["quality_status"] = parts[quality_status_idx]
+                        if quality_reasons_idx != -1: metadata["quality_reasons"] = parts[quality_reasons_idx]
                         if catalog_version_idx != -1: metadata["catalog_version"] = parts[catalog_version_idx]
+                        if spot_source_idx != -1: metadata["spot_source"] = parts[spot_source_idx]
+                        if spot_reference_month_idx != -1: metadata["spot_reference_month"] = parts[spot_reference_month_idx]
+                        if spot_fallback_idx != -1: metadata["spot_fallback_details"] = parts[spot_fallback_idx]
+                        if iv_source_idx != -1: metadata["iv_source"] = parts[iv_source_idx]
+                        if iv_expiry_idx != -1: metadata["iv_expiry"] = parts[iv_expiry_idx]
+                        if iv_dte_idx != -1: metadata["iv_dte"] = int(float(parts[iv_dte_idx]))
+                        if iv_fallback_idx != -1: metadata["iv_fallback_reason"] = parts[iv_fallback_idx]
                         if unknown_types_idx != -1: metadata["unknown_option_types"] = parts[unknown_types_idx]
                         if estimated_types_idx != -1: metadata["estimated_expiry_types"] = parts[estimated_types_idx]
 

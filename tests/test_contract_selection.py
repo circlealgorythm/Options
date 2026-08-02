@@ -4,7 +4,20 @@ import os
 import pandas as pd
 import pytest
 
-from main import copy_csv_to_mt5, convert_cad_options_to_usdcad, detect_spot_and_classify, estimate_atm_iv, resolve_session_date, select_daily_contracts, select_iv_month, select_near_spot_mdd_settle, validate_mdd_summary
+import main as main_module
+
+from main import (
+    copy_csv_to_mt5,
+    convert_cad_options_to_usdcad,
+    detect_spot_and_classify,
+    estimate_atm_iv,
+    resolve_atm_iv_reference,
+    resolve_session_date,
+    select_daily_contracts,
+    select_iv_month,
+    select_near_spot_mdd_settle,
+    validate_mdd_summary,
+)
 from src.parser import month_code_from_yyyymm00, parse_bulletin_date_from_text
 
 
@@ -306,6 +319,64 @@ def test_xau_spot_detection_uses_same_series_and_positive_oi():
     assert abs(spot - 4149.4) < 0.2
 
 
+def test_observed_spot_is_not_rejected_by_a_stale_static_fallback():
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.60, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.60, "Settle": 0.01, "OI": 100, "Is_Call": False},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.62, "Settle": 0.01, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.62, "Settle": 0.02, "OI": 100, "Is_Call": False},
+        ]
+    )
+
+    spot, _, _, diagnostics = detect_spot_and_classify(
+        raw_df, "EUR", include_diagnostics=True
+    )
+
+    assert spot == pytest.approx(1.61)
+    assert diagnostics["global_source"] == "PUT_CALL_PARITY"
+    assert diagnostics["fallback_details"] == {}
+
+
+def test_outlier_contract_month_uses_observed_global_reference():
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.01, "OI": 100, "Is_Call": False},
+            {"Option_Type": "EUU", "Contract_Month": "DEC26", "Strike": 1.60, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "DEC26", "Strike": 1.60, "Settle": 0.01, "OI": 100, "Is_Call": False},
+        ]
+    )
+
+    spot, spots, _, diagnostics = detect_spot_and_classify(
+        raw_df, "EUR", include_diagnostics=True
+    )
+
+    assert spot == pytest.approx(1.16)
+    assert spots["DEC26"] == pytest.approx(spot)
+    assert diagnostics["fallback_details"]["DEC26"].startswith(
+        "GLOBAL_REFERENCE_OUTLIER"
+    )
+
+
+def test_spot_reference_prefers_parity_over_a_nearer_cluster_estimate():
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "EUU", "Contract_Month": "JUL26", "Strike": 1.14, "Settle": 0.01, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.02, "OI": 100, "Is_Call": True},
+            {"Option_Type": "EUU", "Contract_Month": "AUG26", "Strike": 1.15, "Settle": 0.01, "OI": 100, "Is_Call": False},
+        ]
+    )
+
+    spot, _, _, diagnostics = detect_spot_and_classify(
+        raw_df, "EUR", include_diagnostics=True
+    )
+
+    assert spot == pytest.approx(1.16)
+    assert diagnostics["reference_month"] == "AUG26"
+    assert diagnostics["global_source"] == "PUT_CALL_PARITY"
+
+
 def test_mixed_eur_rows_are_classified_by_parity_and_delta():
     raw_df = pd.DataFrame(
         [
@@ -377,6 +448,44 @@ def test_atm_iv_estimate_uses_nearest_strikes_not_wide_smile_window():
     iv_atm = estimate_atm_iv(option_df, "EUR", 1.1400, 7.0 / 252.0, 0.0, 0.02)
 
     assert 0.04 < iv_atm < 0.07
+
+
+def test_atm_iv_static_fallback_has_explicit_diagnostics():
+    empty = pd.DataFrame(columns=["Strike", "Settle", "OI", "Is_Call"])
+
+    iv, diagnostics = resolve_atm_iv_reference(
+        empty, "EUR", 1.14, 7.0 / 252.0, 0.0, 0.02
+    )
+
+    assert iv == 0.07
+    assert diagnostics["source"] == "STATIC_FALLBACK"
+    assert diagnostics["fallback_reason"] == "NO_VALID_OPTION_ROWS"
+
+
+def test_pipeline_excludes_expired_rows_and_marks_static_iv_degraded(
+    tmp_path, monkeypatch
+):
+    raw_df = pd.DataFrame(
+        [
+            {"Option_Type": "BTC", "Contract_Month": "JUL26", "Strike": 100000.0, "Settle": 0.01, "OI": 10, "Is_Call": True},
+            {"Option_Type": "BTC", "Contract_Month": "JUL26", "Strike": 100000.0, "Settle": 0.01, "OI": 10, "Is_Call": False},
+            {"Option_Type": "BTC", "Contract_Month": "AUG26", "Strike": 63000.0, "Settle": 0.01, "OI": 10, "Is_Call": True},
+            {"Option_Type": "BTC", "Contract_Month": "AUG26", "Strike": 63000.0, "Settle": 0.01, "OI": 10, "Is_Call": False},
+        ]
+    )
+    monkeypatch.setattr(main_module, "copy_csv_to_mt5", lambda *_args, **_kwargs: None)
+
+    main_module.calculate_gex_pipeline(
+        raw_df, "BTC", str(tmp_path), datetime.date(2026, 8, 3)
+    )
+
+    output = pd.read_csv(tmp_path / "GEX_BTCUSD_2026-08-03.csv")
+    metadata = output.iloc[0]
+    assert metadata["Futures_Spot"] == pytest.approx(63000.0)
+    assert metadata["Excluded_Expired_Rows"] == 2
+    assert metadata["IV_Source"] == "STATIC_FALLBACK"
+    assert metadata["Quality_Status"] == "DEGRADED"
+    assert "IV_STATIC_FALLBACK" in metadata["Quality_Reasons"]
 
 
 def test_iv_month_rollover_skips_all_near_expiry_months():

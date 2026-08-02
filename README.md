@@ -59,6 +59,7 @@ Where:
 * **Sign**: $+1$ for Call options (assumes dealers are net long volatility), $-1$ for Put options (assumes dealers are net short volatility).
 * **Expiry-aware Greeks**: each option row uses its exact daily, weekly, monthly, or EOM expiration date; rows that merely share a contract month are not assigned the same time-to-expiry.
 * **Fail-closed series catalog**: only explicitly supported CME product codes participate in calculations. Unknown, unresolved, and expired rows are excluded and reported in the output quality metadata. The catalog is maintained in `src/product_config.py`.
+* **Observable market references**: spot and ATM IV record their source in every output. Static or cross-month fallbacks produce a `DEGRADED` quality status with machine-readable reasons instead of silently presenting fallback levels as fully observed data.
 * **Gamma Flip Zone**: The price point where cumulative net GEX transitions from positive to negative. Below this threshold, dealer hedging amplifies market volatility (short-gamma feedback loop).
 
 ---

@@ -210,7 +210,7 @@ PRODUCT_CONFIGS = {
 }
 
 
-CATALOG_VERSION = "2026-08-02.1"
+CATALOG_VERSION = "2026-08-02.2"
 
 
 def normalize_product_key(currency):

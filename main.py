@@ -1,5 +1,6 @@
 import os
 import datetime
+import math
 import re
 import shutil
 import pandas as pd
@@ -425,6 +426,13 @@ FALLBACK_SPOT_MAP = {
     'BTC': 63000.0,
 }
 
+SPOT_OUTLIER_THRESHOLD = 0.20
+SPOT_SOURCE_PRIORITY = {
+    'PUT_CALL_PARITY': 0,
+    'SERIES_FORWARD_CLUSTER': 1,
+    'ATM_PREMIUM_BALANCE': 2,
+}
+
 
 def _infer_series_forward(series_df, fallback_spot):
     """Infer a forward from the dense cluster of put-call parity candidates."""
@@ -450,7 +458,11 @@ def _infer_series_forward(series_df, fallback_spot):
     if not candidates:
         return None
 
-    scale = fallback_spot if fallback_spot > 0.0 else float(series_df['Strike'].median())
+    # Use the bulletin's own strike scale. A hard-coded fallback can become
+    # stale after a large market move and must not reject a valid CME forward.
+    scale = float(series_df['Strike'].median())
+    if not pd.notna(scale) or scale <= 0.0:
+        scale = fallback_spot
     tolerance = max(abs(scale) * 0.0025, 1e-6)
     best = max(
         candidates,
@@ -534,8 +546,12 @@ def estimate_spot_from_put_call_parity(month_df, fallback_spot):
 
         parity_spots = common.to_series().astype(float) + calls[common].astype(float) - puts[common].astype(float)
         parity_spots = parity_spots[parity_spots > 0.0]
-        if fallback_spot > 0.0:
-            parity_spots = parity_spots[(parity_spots >= 0.5 * fallback_spot) & (parity_spots <= 1.5 * fallback_spot)]
+        strike_scale = float(series_df['Strike'].median())
+        if pd.notna(strike_scale) and strike_scale > 0.0:
+            parity_spots = parity_spots[
+                (parity_spots >= 0.5 * strike_scale)
+                & (parity_spots <= 1.5 * strike_scale)
+            ]
 
         candidates.extend(parity_spots.tolist())
 
@@ -543,6 +559,44 @@ def estimate_spot_from_put_call_parity(month_df, fallback_spot):
         return None
 
     return float(pd.Series(candidates).median())
+
+
+def _estimate_month_spot(month_df, fallback_spot, min_settle_threshold):
+    """Return one observed CME reference and the method that produced it."""
+    if month_df.empty or month_df['Is_Call'].isna().all():
+        return None, "NO_CLASSIFIED_SIDES"
+
+    parity_spot = estimate_spot_from_put_call_parity(month_df, fallback_spot)
+    if parity_spot is not None:
+        return parity_spot, "PUT_CALL_PARITY"
+
+    series_forwards = [
+        _infer_series_forward(series_df, fallback_spot)
+        for _, series_df in month_df.groupby('Option_Type', dropna=False)
+    ]
+    series_forwards = [value for value in series_forwards if value is not None]
+    if series_forwards:
+        return float(pd.Series(series_forwards).median()), "SERIES_FORWARD_CLUSTER"
+
+    calls = month_df[
+        (month_df['Is_Call'] == True) & (month_df['OI'] > 0)
+    ].groupby('Strike')['Settle'].max()
+    puts = month_df[
+        (month_df['Is_Call'] == False) & (month_df['OI'] > 0)
+    ].groupby('Strike')['Settle'].max()
+    common = calls.index.intersection(puts.index)
+    if common.empty:
+        return None, "NO_PARITY_PAIRS"
+
+    diffs = (calls[common] - puts[common]).abs()
+    valid_common = [
+        strike
+        for strike in common
+        if calls[strike] >= min_settle_threshold
+        and puts[strike] >= min_settle_threshold
+    ]
+    strike = diffs[valid_common].idxmin() if valid_common else diffs.idxmin()
+    return float(strike), "ATM_PREMIUM_BALANCE"
 
 def weighted_median(values, weights):
     if len(values) == 0:
@@ -589,6 +643,50 @@ def estimate_atm_iv(option_df, currency, spot, T, r, min_iv):
             weights.append(max(float(row['OI']), 1.0))
 
     return weighted_median(iv_values, weights)
+
+
+def resolve_atm_iv_reference(option_df, currency, spot, T, r, min_iv):
+    """Resolve ATM IV with an explicit source and fail-visible fallback."""
+    valid_df = option_df[
+        (option_df['OI'] > 0) & (option_df['Settle'] > 0.0)
+    ].copy() if not option_df.empty else option_df.copy()
+
+    weighted_iv = estimate_atm_iv(option_df, currency, spot, T, r, min_iv)
+    if (
+        weighted_iv is not None
+        and math.isfinite(weighted_iv)
+        and min_iv <= weighted_iv <= 3.0
+    ):
+        return weighted_iv, {
+            'source': 'WEIGHTED_ATM',
+            'input_rows': len(valid_df),
+            'reference_strike': None,
+            'fallback_reason': 'NONE',
+        }
+
+    if not valid_df.empty:
+        nearest_index = (valid_df['Strike'] - spot).abs().idxmin()
+        nearest_row = valid_df.loc[nearest_index]
+        option_side = 'C' if bool(nearest_row['Is_Call']) else 'P'
+        nearest_iv = implied_volatility(
+            nearest_row['Settle'], spot, nearest_row['Strike'], T, r, option_side
+        )
+        if math.isfinite(nearest_iv) and min_iv <= nearest_iv <= 3.0:
+            return nearest_iv, {
+                'source': 'NEAREST_OPTION',
+                'input_rows': len(valid_df),
+                'reference_strike': float(nearest_row['Strike']),
+                'fallback_reason': 'NONE',
+            }
+
+    return FALLBACK_IV.get(currency, 0.08), {
+        'source': 'STATIC_FALLBACK',
+        'input_rows': len(valid_df),
+        'reference_strike': None,
+        'fallback_reason': (
+            'NO_VALID_OPTION_ROWS' if valid_df.empty else 'NO_VALID_IMPLIED_VOL'
+        ),
+    }
 
 def select_iv_month(months, currency, as_of_date):
     sorted_months = sorted([m for m in months if month_sort_key(m) != (9999, 99)], key=month_sort_key)
@@ -640,10 +738,24 @@ def convert_cad_options_to_usdcad(cad_raw, cad_spot):
     usdcad_raw.loc[invalid, 'Settle'] = cad_raw.loc[invalid, 'Settle'] / (cad_raw.loc[invalid, 'Strike'] * cad_spot)
     return usdcad_raw
 
-def detect_spot_and_classify(raw_df, currency):
+def detect_spot_and_classify(raw_df, currency, include_diagnostics=False):
+    fallback_spot = FALLBACK_SPOT_MAP.get(currency, 1.0)
+
+    def result(spot, spots, frame, diagnostics):
+        base = (spot, spots, frame)
+        return (*base, diagnostics) if include_diagnostics else base
+
     if raw_df.empty:
-        return FALLBACK_SPOT_MAP.get(currency, 1.0), {}, raw_df
-        
+        diagnostics = {
+            'global_source': 'STATIC_FALLBACK',
+            'reference_month': 'UNKNOWN',
+            'month_sources': {},
+            'observed_spots': {},
+            'fallback_details': {'NO_ROWS': 'NO_VALID_OPTION_ROWS'},
+            'static_fallback': fallback_spot,
+        }
+        return result(fallback_spot, {}, raw_df.copy(), diagnostics)
+
     df = raw_df.copy()
     
     df['Strike'] = pd.to_numeric(df['Strike'], errors='coerce')
@@ -662,7 +774,6 @@ def detect_spot_and_classify(raw_df, currency):
             subset=['Option_Type', 'Contract_Month', 'Strike', 'Settle', 'OI', 'Is_Call'],
             keep='last',
         )
-    fallback_spot = FALLBACK_SPOT_MAP.get(currency, 1.0)
     df = infer_mixed_option_sides(df, fallback_spot)
     df = df.drop_duplicates(
         subset=['Option_Type', 'Contract_Month', 'Strike', 'Settle', 'OI', 'Is_Call']
@@ -678,53 +789,76 @@ def detect_spot_and_classify(raw_df, currency):
         'XAU': 1.0, 'NAS': 5.0, 'SPX': 5.0, 'BTC': 100.0,
     }.get(currency, 1.0)
     
-    spots_per_month = {}
-    months = df_for_spot['Contract_Month'].unique()
+    months = list(df_for_spot['Contract_Month'].unique())
+    observed_spots = {}
+    observed_sources = {}
     for m in months:
         m_df = df_for_spot[df_for_spot['Contract_Month'] == m]
-        spot_m = fallback_spot
-        
-        # If Is_Call is perfectly known, use it
-        if not m_df['Is_Call'].isna().all():
-            parity_spot = estimate_spot_from_put_call_parity(m_df, fallback_spot)
-            if parity_spot is not None:
-                spot_m = parity_spot
-            else:
-                series_forwards = [
-                    _infer_series_forward(series_df, fallback_spot)
-                    for _, series_df in m_df.groupby('Option_Type', dropna=False)
-                ]
-                series_forwards = [value for value in series_forwards if value is not None]
-                if series_forwards:
-                    spot_m = float(pd.Series(series_forwards).median())
-                else:
-                    calls = m_df[(m_df['Is_Call'] == True) & (m_df['OI'] > 0)].groupby('Strike')['Settle'].max()
-                    puts = m_df[(m_df['Is_Call'] == False) & (m_df['OI'] > 0)].groupby('Strike')['Settle'].max()
-                    common = calls.index.intersection(puts.index)
-                    if not common.empty:
-                        diffs = (calls[common] - puts[common]).abs()
-                        valid_common = [s for s in common if calls[s] >= min_settle_threshold and puts[s] >= min_settle_threshold]
-                        if valid_common:
-                            spot_m = diffs[valid_common].idxmin()
-                        else:
-                            spot_m = diffs.idxmin()
-        else:
-            spot_m = fallback_spot
-        
-        if abs(spot_m - fallback_spot) / fallback_spot > 0.2:
-            print(f"[{currency}] Computed spot {spot_m} for month {m} deviates >20% from fallback {fallback_spot}. Using fallback.")
-            spot_m = fallback_spot
-            
-        spots_per_month[m] = spot_m
-        
-    # Determine global spot for logging/fallback
-    valid_months = [m for m, s in spots_per_month.items() if s != fallback_spot]
-    if valid_months:
-        near_month = nearest_month(valid_months)
-        global_spot = spots_per_month[near_month]
+        spot_m, source = _estimate_month_spot(
+            m_df, fallback_spot, min_settle_threshold
+        )
+        if spot_m is not None and pd.notna(spot_m) and spot_m > 0.0:
+            observed_spots[m] = float(spot_m)
+            observed_sources[m] = source
+
+    reference_month = min(
+        observed_spots,
+        key=lambda month: (
+            SPOT_SOURCE_PRIORITY.get(observed_sources[month], 99),
+            month_sort_key(month),
+        ),
+        default=None,
+    )
+    if reference_month is not None:
+        global_spot = observed_spots[reference_month]
+        global_source = observed_sources[reference_month]
     else:
         global_spot = fallback_spot
-        
+        global_source = 'STATIC_FALLBACK'
+
+    spots_per_month = {}
+    month_sources = {}
+    fallback_details = {}
+    for month in months:
+        observed = observed_spots.get(month)
+        if observed is None:
+            spots_per_month[month] = global_spot
+            month_sources[month] = global_source
+            fallback_details[str(month)] = (
+                'STATIC_FALLBACK_NO_OBSERVATION'
+                if global_source == 'STATIC_FALLBACK'
+                else 'GLOBAL_REFERENCE_NO_OBSERVATION'
+            )
+            continue
+
+        relative_distance = (
+            abs(observed - global_spot) / global_spot if global_spot > 0.0 else 0.0
+        )
+        if month != reference_month and relative_distance > SPOT_OUTLIER_THRESHOLD:
+            spots_per_month[month] = global_spot
+            month_sources[month] = global_source
+            fallback_details[str(month)] = (
+                f"GLOBAL_REFERENCE_OUTLIER_{observed_sources[month]}"
+            )
+            print(
+                f"[{currency}] Observed spot {observed} for month {month} deviates "
+                f">{SPOT_OUTLIER_THRESHOLD:.0%} from CME reference {global_spot}. "
+                "Using the global CME reference."
+            )
+            continue
+
+        spots_per_month[month] = observed
+        month_sources[month] = observed_sources[month]
+
+    diagnostics = {
+        'global_source': global_source,
+        'reference_month': reference_month or 'UNKNOWN',
+        'month_sources': month_sources,
+        'observed_spots': observed_spots,
+        'fallback_details': fallback_details,
+        'static_fallback': fallback_spot,
+    }
+
     # Conservative fallback for malformed rows that still could not be inferred.
     if df['Is_Call'].isna().any():
         for idx, row in df[df['Is_Call'].isna()].iterrows():
@@ -735,7 +869,7 @@ def detect_spot_and_classify(raw_df, currency):
 
     df['Is_Call'] = df['Is_Call'].astype(bool)
 
-    return global_spot, spots_per_month, df
+    return result(global_spot, spots_per_month, df, diagnostics)
 
 def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     if raw_df.empty:
@@ -752,37 +886,46 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             f"[{currency}] No supported CME option series remain after fail-closed filtering"
         )
 
-    spot, spots_per_month, classified_df = detect_spot_and_classify(supported_raw, currency)
+    supported_raw = supported_raw.reset_index(drop=True)
+    supported_raw['Expiry_Date'] = supported_raw.apply(
+        lambda row: resolve_option_expiry(
+            row.get('Option_Type'), row.get('Contract_Month'), currency, calculation_date
+        ),
+        axis=1,
+    )
+    unresolved_expiry_count = int(supported_raw['Expiry_Date'].isna().sum())
+    expired_mask = supported_raw['Expiry_Date'].apply(
+        lambda expiry: expiry is not None and expiry < calculation_date
+    )
+    expired_row_count = int(expired_mask.sum())
+    reference_raw = supported_raw[
+        supported_raw['Expiry_Date'].notna() & ~expired_mask
+    ].copy()
+    if reference_raw.empty:
+        raise RuntimeError(
+            f"[{currency}] No non-expired option rows with a resolved CME expiry"
+        )
+
+    spot, spots_per_month, classified_df, spot_diagnostics = detect_spot_and_classify(
+        reference_raw, currency, include_diagnostics=True
+    )
+    if classified_df.empty:
+        raise RuntimeError(f"[{currency}] No valid option rows remain for market references")
     print(f"[{currency}] Detected Spot price: {spot:.4f}")
-    
-    import math
-    
+
     r = 0.0
-    unresolved_expiry_count = 0
-    expired_row_count = 0
     estimated_expiry_types = []
+    iv_diagnostics = {
+        'source': 'STATIC_FALLBACK',
+        'input_rows': 0,
+        'reference_strike': None,
+        'fallback_reason': 'NO_VALID_OPTION_ROWS',
+    }
+    iv_expiry = None
+    iv_dte = 0
 
     if not classified_df.empty:
         classified_df = classified_df.reset_index(drop=True)
-        classified_df['Expiry_Date'] = classified_df.apply(
-            lambda row: resolve_option_expiry(
-                row.get('Option_Type'), row.get('Contract_Month'), currency, calculation_date
-            ),
-            axis=1,
-        )
-        unresolved_expiry_count = int(classified_df['Expiry_Date'].isna().sum())
-        expired_mask = classified_df['Expiry_Date'].apply(
-            lambda expiry: expiry is not None and expiry < calculation_date
-        )
-        expired_row_count = int(expired_mask.sum())
-        classified_df = classified_df[
-            classified_df['Expiry_Date'].notna() & ~expired_mask
-        ].copy()
-        if classified_df.empty:
-            raise RuntimeError(
-                f"[{currency}] No non-expired option rows with a resolved CME expiry"
-            )
-
         estimated_expiry_types = sorted(
             set(classified_df['Option_Type']) & set(config.rolling_weekdays)
         )
@@ -829,30 +972,44 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         T_iv = max(iv_dte / 252.0, 1.0 / 252.0)
 
         min_iv = MIN_IV_THRESHOLD.get(currency, 0.03)
-        iv_atm = estimate_atm_iv(iv_expiry_df, currency, spot, T_iv, r, min_iv)
-        if iv_atm is None:
-            atm_idx = (iv_expiry_df['Strike'] - spot).abs().idxmin()
-            atm_row = iv_expiry_df.loc[atm_idx]
-            price_atm = atm_row['Settle']
-            is_call_val = atm_row['Is_Call']
-            if isinstance(is_call_val, pd.Series):
-                is_call_val = is_call_val.iloc[0]
-            strike_atm = atm_row['Strike']
-            if isinstance(strike_atm, pd.Series):
-                strike_atm = strike_atm.iloc[0]
-            iv_atm = implied_volatility(price_atm, spot, strike_atm, T_iv, 0.0, 'C' if is_call_val else 'P')
-
-        # Minimum IV sanity check
-        if iv_atm < min_iv:
-            iv_atm = FALLBACK_IV.get(currency, 0.08)
-    else:
-        iv_atm = FALLBACK_IV.get(currency, 0.08)
+        iv_atm, iv_diagnostics = resolve_atm_iv_reference(
+            iv_expiry_df, currency, spot, T_iv, r, min_iv
+        )
         
     sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
-    print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
+    spot_fallback_details = spot_diagnostics['fallback_details']
+    degraded_reasons = []
+    if spot_diagnostics['global_source'] == 'STATIC_FALLBACK':
+        degraded_reasons.append('SPOT_STATIC_FALLBACK')
+    if spot_fallback_details:
+        degraded_reasons.append('SPOT_MONTH_FALLBACK')
+    if iv_diagnostics['source'] == 'STATIC_FALLBACK':
+        degraded_reasons.append(
+            f"IV_STATIC_FALLBACK:{iv_diagnostics['fallback_reason']}"
+        )
 
-    quality_status = 'WARN' if unknown_row_count or unresolved_expiry_count else (
-        'ESTIMATED' if estimated_expiry_types else 'OK'
+    quality_reasons = list(degraded_reasons)
+    if unknown_option_types:
+        quality_reasons.append('UNKNOWN_SERIES')
+    if unresolved_expiry_count:
+        quality_reasons.append('UNRESOLVED_EXPIRY')
+    if estimated_expiry_types:
+        quality_reasons.append('ESTIMATED_EXPIRY_ALIAS')
+
+    if degraded_reasons:
+        quality_status = 'DEGRADED'
+    elif unknown_row_count or unresolved_expiry_count:
+        quality_status = 'WARN'
+    elif estimated_expiry_types:
+        quality_status = 'ESTIMATED'
+    else:
+        quality_status = 'OK'
+
+    print(
+        f"[{currency}] Market references: spot={spot:.4f} "
+        f"({spot_diagnostics['global_source']}, {spot_diagnostics['reference_month']}), "
+        f"IV={iv_atm:.2%} ({iv_diagnostics['source']}, "
+        f"expiry={iv_expiry}, DTE={iv_dte}); Daily Sigma={sigma_1d:.5f}"
     )
     print(
         f"[{currency}] Data quality: {quality_status}; input={len(raw_df)}, "
@@ -863,6 +1020,15 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         print(f"[{currency}] Excluded unknown option types: {', '.join(unknown_option_types)}")
     if estimated_expiry_types:
         print(f"[{currency}] Estimated bulletin aliases: {', '.join(estimated_expiry_types)}")
+    if spot_fallback_details:
+        details = ', '.join(
+            f"{month}={reason}" for month, reason in spot_fallback_details.items()
+        )
+        print(f"[{currency}] Spot fallback details: {details}")
+    if iv_diagnostics['source'] == 'STATIC_FALLBACK':
+        print(
+            f"[{currency}] IV fallback reason: {iv_diagnostics['fallback_reason']}"
+        )
     
     calculated_rows = []
     strikes_list = []
@@ -1038,7 +1204,32 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     summary['Gamma_Flip'] = gamma_flip_val if gamma_flip_val is not None else 0.0
     summary['Gamma_Flip_Status'] = 'FOUND' if gamma_flip_val is not None else 'NO_CROSSING'
     summary['Quality_Status'] = quality_status
+    summary['Quality_Reasons'] = ';'.join(quality_reasons) or 'NONE'
     summary['Series_Catalog_Version'] = CATALOG_VERSION
+    summary['Spot_Source'] = spot_diagnostics['global_source']
+    summary['Spot_Reference_Month'] = spot_diagnostics['reference_month']
+    summary['Spot_Month_Sources'] = ';'.join(
+        f"{month}={source}"
+        for month, source in spot_diagnostics['month_sources'].items()
+    ) or 'NONE'
+    summary['Spot_Observed_Values'] = ';'.join(
+        f"{month}={value:.10g}"
+        for month, value in spot_diagnostics['observed_spots'].items()
+    ) or 'NONE'
+    summary['Spot_Fallback_Details'] = ';'.join(
+        f"{month}={reason}"
+        for month, reason in spot_fallback_details.items()
+    ) or 'NONE'
+    summary['IV_Source'] = iv_diagnostics['source']
+    summary['IV_Expiry'] = str(iv_expiry) if iv_expiry is not None else 'UNKNOWN'
+    summary['IV_DTE'] = iv_dte
+    summary['IV_Input_Rows'] = iv_diagnostics['input_rows']
+    summary['IV_Reference_Strike'] = (
+        iv_diagnostics['reference_strike']
+        if iv_diagnostics['reference_strike'] is not None
+        else 0.0
+    )
+    summary['IV_Fallback_Reason'] = iv_diagnostics['fallback_reason']
     summary['Input_Rows'] = len(raw_df)
     summary['Used_Rows'] = len(classified_df)
     summary['Excluded_Unknown_Rows'] = unknown_row_count
