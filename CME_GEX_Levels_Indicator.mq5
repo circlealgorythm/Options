@@ -424,7 +424,7 @@ void UpdateLevels()
          }
       }
    }
-   // Fallback: if today's GEX data is missing, load and plot the latest available GEX data on today's chart column
+   // If today's file is missing, keep the latest levels on their actual historical date.
    bool fallback_loaded = false;
    if(!today_loaded && latest_available_date != "")
    {
@@ -440,10 +440,10 @@ void UpdateLevels()
       else
          local_file_path += "GEX_" + g_base_currency + "USD_" + latest_available_date + ".csv";
       string dummy_month = "";
-      if(TryParseLocalCSV(local_file_path, today_str, dummy_month, "Fallback loaded from latest " + latest_available_date))
+      if(TryParseLocalCSV(local_file_path, latest_available_date, dummy_month, "Latest historical levels remain on " + latest_available_date))
       {
          fallback_loaded = true;
-         Print("Successfully loaded fallback levels for today (", today_str, ") from latest available file (", latest_available_date, ")");
+         Print("Today's levels are missing for ", today_str, ". Latest historical levels remain on ", latest_available_date);
       }
    }
    UpdateVisibility();
@@ -472,8 +472,8 @@ void DrawUpdateStatus(string today_str, bool today_loaded, bool fallback_loaded,
       }
       else if(fallback_loaded)
       {
-         status = StringFormat("GEX today OK (Fallback %s): %s", latest_date, today_str);
-         status_color = clrGoldenrod; // Warm gold color for fallback
+         status = StringFormat("GEX today MISSING: %s | latest: %s", today_str, latest_date);
+         status_color = clrCrimson;
       }
       else
       {
