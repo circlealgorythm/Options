@@ -13,6 +13,7 @@ from Dashboard import run_dashboard
 @pytest.fixture
 def dashboard_server(tmp_path, monkeypatch):
     monkeypatch.setattr(run_dashboard, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(run_dashboard, "ANALYSIS_PATH", str(tmp_path / "analysis.json"))
     monkeypatch.setattr(run_dashboard, "schedule_today_files_sync", lambda: False)
     server = run_dashboard.ThreadingHTTPServer(
         ("127.0.0.1", 0),
@@ -105,3 +106,59 @@ def test_api_exposes_anomaly_and_fail_closed_xau_basis(dashboard_server):
     assert metadata["basis_reason"] == "NO_SYNCHRONIZED_XAU_REFERENCE"
     assert metadata["live_spot"] is None
     assert metadata["live_offset"] == 0.0
+
+
+def test_analysis_api_never_substitutes_an_old_report_for_selected_date(
+    dashboard_server,
+):
+    base_url, data_dir = dashboard_server
+    today = datetime.date.today()
+    old_date = today - datetime.timedelta(days=1)
+    analysis_path = data_dir / "analysis.json"
+    analysis_path.write_text(
+        json.dumps({
+            "schema_version": 2,
+            "generation_mode": "on_demand",
+            "assets": {
+                "EUR": {
+                    "daily": {
+                        old_date.isoformat(): {
+                            "report_date": old_date.isoformat(),
+                            "generated_at": f"{old_date.isoformat()}T09:00:00+03:00",
+                            "content": "Старый дневной отчёт",
+                        }
+                    },
+                    "weekly": {},
+                }
+            },
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    with urllib.request.urlopen(
+        f"{base_url}/api/analysis?currency=EUR&date={today.isoformat()}&period=daily"
+    ) as response:
+        missing_payload = json.loads(response.read().decode("utf-8"))
+    with urllib.request.urlopen(
+        f"{base_url}/api/analysis?currency=EUR&date={old_date.isoformat()}&period=daily"
+    ) as response:
+        exact_payload = json.loads(response.read().decode("utf-8"))
+
+    assert missing_payload["period_key"] == today.isoformat()
+    assert missing_payload["report"] is None
+    assert exact_payload["report"] == "Старый дневной отчёт"
+    assert exact_payload["report_date"] == old_date.isoformat()
+
+
+def test_analysis_api_rejects_unknown_period(dashboard_server):
+    base_url, _ = dashboard_server
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(
+            f"{base_url}/api/analysis?currency=EUR&date="
+            f"{datetime.date.today().isoformat()}&period=monday"
+        )
+
+    payload = json.loads(exc_info.value.read().decode("utf-8"))
+    assert exc_info.value.code == 400
+    assert payload["error"]["code"] == "INVALID_ANALYSIS_PERIOD"

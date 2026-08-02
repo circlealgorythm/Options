@@ -12,7 +12,7 @@ let state = {
     zeroGamma: null,
     maxGammaStrike: null,
     currentView: 'dashboard', // 'dashboard' or 'analysis'
-    activeAnalysisTab: 'weekly', // 'weekly', 'monday', etc.
+    activeAnalysisTab: 'daily', // 'daily' or 'weekly'
     analysisData: null,
     noiseThresholdPercent: 2.0, // Default 2.0%
     adaptSpot: false
@@ -145,16 +145,12 @@ function loadSavedState() {
 
     // 5. Active Analysis Tab
     const savedAnalysisTab = localStorage.getItem('gex_dashboard_analysis_tab');
-    if (savedAnalysisTab) {
+    if (savedAnalysisTab === 'daily' || savedAnalysisTab === 'weekly') {
         state.activeAnalysisTab = savedAnalysisTab;
-        elements.analysisTabBtns.forEach(b => {
-            if (b.dataset.day === savedAnalysisTab) {
-                b.classList.add('active');
-            } else {
-                b.classList.remove('active');
-            }
-        });
     }
+    elements.analysisTabBtns.forEach(b => {
+        b.classList.toggle('active', b.dataset.period === state.activeAnalysisTab);
+    });
 
     // 6. Noise threshold
     const savedNoise = localStorage.getItem('gex_dashboard_noise_filter');
@@ -270,6 +266,7 @@ async function fetchDates() {
                 localStorage.setItem('gex_dashboard_date', state.date);
             }
         } else {
+            state.date = '';
             const opt = document.createElement('option');
             opt.value = '';
             opt.textContent = 'Нет доступных дат';
@@ -277,6 +274,7 @@ async function fetchDates() {
         }
     } catch (e) {
         console.error('Error fetching dates', e);
+        state.date = '';
         elements.dateSelect.innerHTML = '<option value="">Ошибка загрузки дат</option>';
     }
 }
@@ -1214,61 +1212,90 @@ function switchView(view) {
     }
 }
 
-// Fetch GEX Daily Analysis
+// Fetch an exact on-demand daily or weekly analysis report
 async function fetchAnalysis() {
+    if (!state.date) {
+        state.analysisData = null;
+        elements.analysisContent.innerHTML = `
+            <div class="text-center text-muted" style="padding: 40px 0;">
+                <i class="fa-solid fa-calendar-xmark" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-cyan);"></i>
+                <p>Сначала выберите дату с доступными уровнями.</p>
+            </div>
+        `;
+        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Отчёт: дата не выбрана`;
+        return;
+    }
+
+    const requestedCurrency = state.currency;
+    const requestedDate = state.date;
+    const requestedPeriod = state.activeAnalysisTab;
     try {
-        const response = await fetch('analysis.json?t=' + new Date().getTime());
-        if (!response.ok) {
-            throw new Error('Analysis file not found');
+        const params = new URLSearchParams({
+            currency: requestedCurrency,
+            date: requestedDate,
+            period: requestedPeriod
+        });
+        const payload = await fetchJson(`/api/analysis?${params}`);
+        if (requestedCurrency !== state.currency
+            || requestedDate !== state.date
+            || requestedPeriod !== state.activeAnalysisTab) {
+            return;
         }
-        state.analysisData = await response.json();
+        state.analysisData = payload;
         renderAnalysis();
     } catch (e) {
+        if (requestedCurrency !== state.currency
+            || requestedDate !== state.date
+            || requestedPeriod !== state.activeAnalysisTab) {
+            return;
+        }
         console.error('Error fetching analysis:', e);
         elements.analysisContent.innerHTML = `
             <div class="text-center text-muted" style="padding: 40px 0;">
                 <i class="fa-solid fa-triangle-exclamation" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-red);"></i>
-                <p>Не удалось загрузить файл аналитики (analysis.json).</p>
+                <p>Не удалось безопасно загрузить архив аналитики.</p>
                 <p style="font-size: 13px; margin-top: 8px;">Ошибка: ${e.message}</p>
             </div>
         `;
-        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Обновление: Ошибка`;
+        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Отчёт: ошибка загрузки`;
     }
 }
 
 // Render selected analysis tab
 function renderAnalysis() {
     if (!state.analysisData) return;
-    
-    // Check if the currency key exists
-    const currencyData = state.analysisData[state.currency];
-    if (!currencyData) {
-        const currencyLabel = state.currency.includes('USD') ? state.currency : `${state.currency}USD`;
+
+    const payload = state.analysisData;
+    if (payload.currency !== state.currency
+        || payload.selected_date !== state.date
+        || payload.period !== state.activeAnalysisTab) {
         elements.analysisContent.innerHTML = `
             <div class="text-center text-muted" style="padding: 40px 0;">
-                <i class="fa-solid fa-circle-info" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-cyan);"></i>
-                <p>Нет аналитических данных для валютной пары ${currencyLabel}.</p>
+                <i class="fa-solid fa-triangle-exclamation" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-red);"></i>
+                <p>Сервер вернул отчёт для другого актива, периода или даты.</p>
             </div>
         `;
-        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Обновление: Нет данных`;
+        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Отчёт: отклонён проверкой даты`;
         return;
     }
-    
-    // Check if the selected day/weekly tab exists
-    const mdContent = currencyData[state.activeAnalysisTab];
-    const updatedAt = state.analysisData.updated_at || currencyData.updated_at || 'Неизвестно';
-    
-    elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Последнее обновление: ${updatedAt}`;
-    
-    if (!mdContent || mdContent.trim() === '') {
+
+    const mdContent = payload.report;
+    const periodLabel = payload.period === 'daily'
+        ? `дату ${payload.period_key}`
+        : `неделю с ${payload.period_key}`;
+
+    if (!mdContent || typeof mdContent !== 'string' || mdContent.trim() === '') {
+        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Отчёт: не составлялся для ${periodLabel}`;
         elements.analysisContent.innerHTML = `
             <div class="text-center text-muted" style="padding: 40px 0;">
                 <i class="fa-solid fa-robot" style="font-size: 48px; margin-bottom: 16px; color: var(--accent-cyan);"></i>
-                <p>Анализ для выбранного периода еще не составлен.</p>
+                <p>Анализ для ${periodLabel} не составлялся.</p>
                 <p style="font-size: 13px; margin-top: 8px;">Запросите проведение анализа в чате с ИИ-помощником.</p>
             </div>
         `;
     } else {
+        const generatedAt = payload.generated_at || payload.updated_at || 'неизвестно';
+        elements.analysisUpdatedLabel.innerHTML = `<i class="fa-solid fa-clock"></i> Отчёт для ${periodLabel} · сформирован: ${generatedAt}`;
         // Parse markdown using marked
         try {
             let htmlContent = marked.parse(mdContent);
@@ -1334,10 +1361,13 @@ function bindEvents() {
     }
     
     // Select date option
-    elements.dateSelect.addEventListener('change', (e) => {
+    elements.dateSelect.addEventListener('change', async (e) => {
         state.date = e.target.value;
         localStorage.setItem('gex_dashboard_date', state.date); // SAVE State
-        fetchLevelData();
+        await fetchLevelData();
+        if (state.currentView === 'analysis') {
+            await fetchAnalysis();
+        }
     });
     
     // Toggle switches configuration with LocalStorage persistence
@@ -1423,14 +1453,14 @@ function bindEvents() {
         });
     });
 
-    // Analysis day-tabs click
+    // Analysis period tabs click
     elements.analysisTabBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             elements.analysisTabBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            state.activeAnalysisTab = btn.dataset.day;
+            state.activeAnalysisTab = btn.dataset.period;
             localStorage.setItem('gex_dashboard_analysis_tab', state.activeAnalysisTab);
-            renderAnalysis();
+            await fetchAnalysis();
         });
     });
 }
@@ -1448,6 +1478,9 @@ async function init() {
     await fetchDates();
     await fetchLevelData();
     await fetchSyncStatus();
+    if (state.currentView === 'analysis') {
+        await fetchAnalysis();
+    }
 }
 
 window.addEventListener('DOMContentLoaded', init);

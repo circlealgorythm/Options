@@ -16,12 +16,33 @@ import uuid
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 
+try:
+    from .analysis_store import (
+        AnalysisStoreError,
+        load_analysis_payload,
+        prune_analysis_payload,
+        resolve_analysis_report,
+        week_start_for,
+        write_analysis_payload,
+    )
+except ImportError:  # Direct execution: python Dashboard/run_dashboard.py
+    from analysis_store import (
+        AnalysisStoreError,
+        load_analysis_payload,
+        prune_analysis_payload,
+        resolve_analysis_report,
+        week_start_for,
+        write_analysis_payload,
+    )
+
 PORT = 8080
 HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
+ANALYSIS_PATH = os.path.join(BASE_DIR, "analysis.json")
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 SUPPORTED_CURRENCIES = frozenset({"EUR", "GBP", "XAU", "NAS", "SPX", "BTC", "USDCAD"})
+ANALYSIS_STORE_LOCK = threading.Lock()
 
 LAST_SYNC_ATTEMPT = 0.0
 SYNC_THROTTLE_SECONDS = 900  # 15 minutes throttle
@@ -378,6 +399,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.handle_get_dates(parsed_url.query)
         elif path == '/api/data':
             self.handle_get_data(parsed_url.query)
+        elif path == '/api/analysis':
+            self.handle_get_analysis(parsed_url.query)
         elif path == '/api/status':
             self.handle_get_status()
         elif path.startswith('/api/'):
@@ -722,6 +745,106 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "GEX_DATA_READ_FAILED",
                 "Unable to read the GEX data file",
             )
+
+    def handle_get_analysis(self, query_str):
+        params = parse_qs(query_str)
+        currency = params.get("currency", ["EUR"])[0].upper()
+        selected_date = params.get("date", [None])[0]
+        period = params.get("period", ["daily"])[0].lower()
+
+        if currency not in SUPPORTED_CURRENCIES:
+            self.send_error_json(
+                400,
+                "INVALID_CURRENCY",
+                f"Unsupported currency: {currency}",
+            )
+            return
+        if selected_date is None:
+            self.send_error_json(
+                400,
+                "ANALYSIS_DATE_REQUIRED",
+                "Analysis date is required",
+            )
+            return
+        try:
+            selected_date_value = datetime.date.fromisoformat(selected_date)
+        except ValueError:
+            self.send_error_json(
+                400,
+                "INVALID_DATE",
+                f"Invalid date format: {selected_date}",
+            )
+            return
+        if period not in {"daily", "weekly"}:
+            self.send_error_json(
+                400,
+                "INVALID_ANALYSIS_PERIOD",
+                f"Unsupported analysis period: {period}",
+            )
+            return
+
+        try:
+            with ANALYSIS_STORE_LOCK:
+                if os.path.exists(ANALYSIS_PATH):
+                    source_payload = load_analysis_payload(ANALYSIS_PATH)
+                else:
+                    source_payload = {
+                        "schema_version": 2,
+                        "generation_mode": "on_demand",
+                        "retention_days": 7,
+                        "assets": {},
+                    }
+                payload, removed = prune_analysis_payload(source_payload)
+                if removed or payload != source_payload:
+                    write_analysis_payload(ANALYSIS_PATH, payload)
+                report = resolve_analysis_report(
+                    payload,
+                    currency,
+                    selected_date,
+                    period,
+                )
+        except AnalysisStoreError as exc:
+            self.log_error(
+                "[request_id=%s] Invalid analysis store: %s",
+                self.request_id,
+                exc,
+            )
+            self.send_error_json(
+                500,
+                "INVALID_ANALYSIS_STORE",
+                "Unable to read the analysis archive safely",
+            )
+            return
+
+        period_key = (
+            selected_date
+            if period == "daily"
+            else week_start_for(selected_date_value).isoformat()
+        )
+        response = {
+            "schema_version": payload.get("schema_version", 1),
+            "generation_mode": payload.get("generation_mode", "on_demand"),
+            "retention_days": payload.get("retention_days", 7),
+            "currency": currency,
+            "selected_date": selected_date,
+            "period": period,
+            "period_key": period_key,
+            "updated_at": payload.get("updated_at", "UNKNOWN"),
+            "report": None,
+            "generated_at": None,
+            "source": None,
+        }
+        if report is not None:
+            response.update({
+                "period_key": report["period_key"],
+                "report": report["content"],
+                "generated_at": report.get("generated_at"),
+                "source": report.get("source"),
+                "report_date": report.get("report_date"),
+                "week_start": report.get("week_start"),
+                "week_end": report.get("week_end"),
+            })
+        self.send_json(200, response)
 
     def handle_get_status(self):
         try:
