@@ -101,6 +101,33 @@ def extract_oi(parts):
             return int(cleaned)
     return 0
 
+
+def extract_delta(parts, settle_idx):
+    """Extract delta after the settlement-change field in a bulletin row."""
+    if settle_idx < 0 or settle_idx + 1 >= len(parts):
+        return 0.0
+
+    cursor = settle_idx + 1
+    if parts[cursor] in {"+", "-"}:
+        # Some text layers split a point change into sign and magnitude.
+        cursor += 2
+    else:
+        # Native rows use an integer change; decimal-quote duplicate pages use
+        # a signed decimal. Neither field is delta.
+        cursor += 1
+
+    for delta_token in parts[cursor:cursor + 2]:
+        clean_delta = re.sub(r'[AB+\-*]', '', delta_token)
+        if '.' not in clean_delta:
+            continue
+        try:
+            candidate_delta = float(clean_delta)
+        except ValueError:
+            continue
+        if 0.0 <= candidate_delta <= 1.0:
+            return candidate_delta
+    return 0.0
+
 def parse_bulletin_date_from_text(text: str):
     match = re.search(r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\b', text)
     if not match:
@@ -310,21 +337,7 @@ def parse_cme_pdf(pdf_path: str, currency: str, is_call_only: bool = None):
                 oi = extract_oi(parts)
                 
                 # Robust Delta Extraction
-                delta = 0.0
-                if settle_idx != -1:
-                    delta_col = settle_idx + (1 if is_glued else 2)
-                    if delta_col < len(parts):
-                        delta_token = parts[delta_col]
-                        if delta_token != "----" and any(c.isdigit() for c in delta_token):
-                            clean_delta = re.sub(r'[AB]', '', delta_token)
-                            try:
-                                delta = float(clean_delta)
-                                if delta > 100.0:
-                                    delta /= 10000.0
-                                elif delta > 1.0:
-                                    delta /= 100.0
-                            except:
-                                delta = 0.0
+                delta = extract_delta(parts, settle_idx)
                                 
                 data.append({
                     "Strike": strike,

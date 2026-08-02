@@ -19,50 +19,75 @@ DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\
 LAST_SYNC_ATTEMPT = 0.0
 SYNC_THROTTLE_SECONDS = 900  # 15 minutes throttle
 
-# Live Spot Price Cache (TTL = 60s)
-LIVE_SPOT_CACHE = {}
+# Synchronized spot/futures cache (TTL = 60s for live data)
+MARKET_PRICE_CACHE = {}
 CACHE_TTL = 60.0
 
-YAHOO_TICKERS = {
-    "EUR": "EURUSD=X",
-    "GBP": "GBPUSD=X",
-    "XAU": "GC=F",
-    "NAS": "^NDX",
-    "SPX": "^SPX",
-    "BTC": "BTC-USD",
-
-    "USDCAD": "USDCAD=X"
+YAHOO_MARKETS = {
+    "EUR": {"spot": "EURUSD=X", "futures": "6E=F"},
+    "GBP": {"spot": "GBPUSD=X", "futures": "6B=F"},
+    # Yahoo exposes GC futures but no reliable XAU/USD spot series. Leaving
+    # XAU unmapped deliberately prevents a stale or cross-instrument offset.
+    "NAS": {"spot": "^NDX", "futures": "NQ=F"},
+    "SPX": {"spot": "^SPX", "futures": "ES=F"},
+    "BTC": {"spot": "BTC-USD", "futures": "BTC=F"},
+    "USDCAD": {"spot": "USDCAD=X", "futures": "6C=F", "invert_futures": True},
 }
 
-def get_live_spot_price(currency):
-    ticker = YAHOO_TICKERS.get(currency.upper())
-    if not ticker:
-        return None
-        
+
+def _fetch_yahoo_reference(ticker, selected_date=None):
+    cache_key = (ticker, selected_date.isoformat() if selected_date else "live")
     now = time.time()
-    cached = LIVE_SPOT_CACHE.get(currency)
-    if cached and (now - cached["timestamp"] < CACHE_TTL):
+    cached = MARKET_PRICE_CACHE.get(cache_key)
+    cache_ttl = 86400.0 if selected_date else CACHE_TTL
+    if cached and now - cached["timestamp"] < cache_ttl:
         return cached["price"]
-        
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-    req = urllib.request.Request(
-        url,
-        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    )
+
+    if selected_date:
+        period1 = int(datetime.datetime.combine(selected_date, datetime.time.min, datetime.timezone.utc).timestamp())
+        period2 = int((datetime.datetime.combine(selected_date, datetime.time.min, datetime.timezone.utc) + datetime.timedelta(days=2)).timestamp())
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={period1}&period2={period2}&interval=1d"
+    else:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
     context = ssl._create_unverified_context()
     try:
         with urllib.request.urlopen(req, context=context, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            meta = data['chart']['result'][0]['meta']
-            price = meta.get('regularMarketPrice')
-            if price is not None:
-                LIVE_SPOT_CACHE[currency] = {"price": price, "timestamp": now}
+            result = json.loads(response.read().decode('utf-8'))['chart']['result'][0]
+            if selected_date:
+                opens = result.get('indicators', {}).get('quote', [{}])[0].get('open', [])
+                price = next((float(value) for value in opens if value is not None and value > 0.0), None)
+            else:
+                price = result.get('meta', {}).get('regularMarketPrice')
+            if price is not None and float(price) > 0.0:
+                price = float(price)
+                MARKET_PRICE_CACHE[cache_key] = {"price": price, "timestamp": now}
                 return price
-    except Exception as e:
-        print(f"[LiveSpot] Error fetching live spot for {currency} ({ticker}): {e}")
+    except Exception as exc:
+        print(f"[MarketReference] Error fetching {ticker}: {exc}")
         if cached:
             return cached["price"]
     return None
+
+
+def get_market_basis(currency, selected_date=None):
+    config = YAHOO_MARKETS.get(currency.upper())
+    if not config:
+        return None
+
+    spot = _fetch_yahoo_reference(config["spot"], selected_date)
+    futures = _fetch_yahoo_reference(config["futures"], selected_date)
+    if futures and config.get("invert_futures"):
+        futures = 1.0 / futures
+    if not spot or not futures:
+        return None
+    return {
+        "spot": spot,
+        "futures": futures,
+        "offset": spot - futures,
+        "source": "historical_open" if selected_date else "live_synchronized",
+    }
 
 def sync_today_files_from_github():
     global LAST_SYNC_ATTEMPT
@@ -304,7 +329,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "r95_low": 0.0,
                 "global_month": "UNKNOWN",
                 "daily_month": "UNKNOWN",
-                "gamma_flip": 0.0
+                "daily_expiry": "UNKNOWN",
+                "global_expiry": "UNKNOWN",
+                "gamma_flip": 0.0,
+                "gamma_flip_status": "UNKNOWN",
             }
 
             with open(csv_path, 'r', encoding='utf-8') as f:
@@ -336,7 +364,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     r95_l_idx = headers.index("R95_Low") if "R95_Low" in headers else -1
                     g_month_idx = headers.index("Global_Month") if "Global_Month" in headers else -1
                     d_month_idx = headers.index("Daily_Month") if "Daily_Month" in headers else -1
+                    d_expiry_idx = headers.index("Daily_Expiry") if "Daily_Expiry" in headers else -1
+                    g_expiry_idx = headers.index("Global_Expiry") if "Global_Expiry" in headers else -1
                     gamma_flip_idx = headers.index("Gamma_Flip") if "Gamma_Flip" in headers else -1
+                    gamma_status_idx = headers.index("Gamma_Flip_Status") if "Gamma_Flip_Status" in headers else -1
                 except ValueError as ve:
                     self.send_error_json(500, f"Missing required column in GEX CSV: {str(ve)}")
                     return
@@ -361,8 +392,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         if r95_l_idx != -1: metadata["r95_low"] = float(parts[r95_l_idx])
                         if g_month_idx != -1: metadata["global_month"] = parts[g_month_idx]
                         if d_month_idx != -1: metadata["daily_month"] = parts[d_month_idx]
+                        if d_expiry_idx != -1: metadata["daily_expiry"] = parts[d_expiry_idx]
+                        if g_expiry_idx != -1: metadata["global_expiry"] = parts[g_expiry_idx]
                         if gamma_flip_idx != -1 and gamma_flip_idx < len(parts):
                             metadata["gamma_flip"] = float(parts[gamma_flip_idx])
+                        if gamma_status_idx != -1: metadata["gamma_flip_status"] = parts[gamma_status_idx]
 
                     levels.append({
                         "strike": float(parts[strike_idx]),
@@ -376,14 +410,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "global_put_oi": float(parts[glob_put_oi_idx]),
                     })
 
-            # Fetch live spot price
-            live_spot = get_live_spot_price(currency)
-            if live_spot is not None:
-                metadata["live_spot"] = live_spot
-                metadata["live_offset"] = live_spot - metadata["spot"]
+            # Convert futures strikes to spot using synchronized references.
+            # Historical files use same-day opens; today's file uses two live
+            # quotes. Never subtract a live spot from a stale CSV future.
+            selected_date_value = datetime.date.fromisoformat(selected_date)
+            basis_date = None if selected_date_value == datetime.date.today() else selected_date_value
+            basis = get_market_basis(currency, basis_date)
+            if basis is not None:
+                metadata["live_spot"] = basis["spot"]
+                metadata["live_futures"] = basis["futures"]
+                metadata["live_offset"] = basis["offset"]
+                metadata["offset_status"] = basis["source"]
             else:
                 metadata["live_spot"] = metadata["spot"]
+                metadata["live_futures"] = metadata["spot"]
                 metadata["live_offset"] = 0.0
+                metadata["offset_status"] = "unavailable"
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')

@@ -20,6 +20,6 @@ def test_bs_gamma():
     gamma = bs_gamma(100, 100, 1, 0.05, 0.2)
     assert abs(gamma - 0.01876) < 0.001
 
-def test_gex_uses_raw_contract_units_without_display_normalization():
-    assert calculate_gex(0.02, 10, 100, 4000) == 20.0
+def test_gex_is_dollar_gamma_for_one_percent_move():
+    assert calculate_gex(0.02, 10, 100, 4000) == 3_200_000.0
     assert calculate_absolute_gamma(0.02, 10) == 0.2

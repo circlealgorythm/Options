@@ -2,6 +2,7 @@ import datetime
 import os
 
 import pandas as pd
+import pytest
 
 from main import copy_csv_to_mt5, convert_cad_options_to_usdcad, detect_spot_and_classify, estimate_atm_iv, resolve_session_date, select_daily_contracts, select_iv_month, select_near_spot_mdd_settle, validate_mdd_summary
 from src.parser import month_code_from_yyyymm00, parse_bulletin_date_from_text
@@ -207,7 +208,7 @@ def test_daily_mdd_selects_nearest_put_below_spot_instead_of_max_oi():
     assert selected.iloc[0]["Put_Settle"] == 0.0051
 
 
-def test_nas_daily_mdd_keeps_call_and_put_in_same_near_month():
+def test_nas_daily_mdd_rejects_call_and_put_from_different_expiries():
     calc_df = make_rows(
         [
             ("QWW", "JUN26", 29700.0, 100, 0, 72, 0, 211.0, 0.0),
@@ -218,9 +219,7 @@ def test_nas_daily_mdd_keeps_call_and_put_in_same_near_month():
 
     selected = select_daily_contracts(calc_df, "NAS", datetime.date(2026, 6, 24))
 
-    assert set(selected["Contract_Month"]) == {"JUN26"}
-    assert (selected["Call_OI"] > 0).any()
-    assert (selected["Put_OI"] > 0).any()
+    assert selected.empty
 
 
 def test_nas_daily_mdd_prefers_same_mid_code_put_when_parser_has_it():
@@ -305,6 +304,45 @@ def test_xau_spot_detection_uses_same_series_and_positive_oi():
 
     assert abs(spots_per_month["JUN26"] - 4149.4) < 0.2
     assert abs(spot - 4149.4) < 0.2
+
+
+def test_mixed_eur_rows_are_classified_by_parity_and_delta():
+    raw_df = pd.DataFrame(
+        [
+            {"Strike": 1.1300, "Settle": 0.0255, "Delta": 0.95, "OI": 10, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            {"Strike": 1.1300, "Settle": 0.0005, "Delta": 0.05, "OI": 100, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            # Duplicate text-layer row with point-change misread as delta.
+            {"Strike": 1.1300, "Settle": 0.0255000000001, "Delta": 0.0077, "OI": 10, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            {"Strike": 1.1700, "Settle": 0.0010, "Delta": 0.20, "OI": 80, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+            {"Strike": 1.1700, "Settle": 0.0160, "Delta": 0.80, "OI": 20, "Is_Call": None, "Contract_Month": "AUG26", "Option_Type": "2EU"},
+        ]
+    )
+
+    spot, spots_per_month, classified = detect_spot_and_classify(raw_df, "EUR")
+
+    assert len(classified) == 4
+    assert spot == pytest.approx(1.1550, abs=1e-6)
+    assert spots_per_month["AUG26"] == pytest.approx(1.1550, abs=1e-6)
+    low_strike = classified[classified["Strike"] == 1.1300].sort_values("Settle")
+    high_strike = classified[classified["Strike"] == 1.1700].sort_values("Settle")
+    assert low_strike["Is_Call"].tolist() == [False, True]
+    assert high_strike["Is_Call"].tolist() == [True, False]
+
+
+def test_expiry_day_intrinsic_rows_infer_forward_without_premium_pairs():
+    raw_df = pd.DataFrame(
+        [
+            {"Strike": 1.1400, "Settle": 0.0142, "Delta": 1.0, "OI": 10, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+            {"Strike": 1.1450, "Settle": 0.0092, "Delta": 1.0, "OI": 20, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+            {"Strike": 1.1500, "Settle": 0.0042, "Delta": 1.0, "OI": 30, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+            {"Strike": 1.1600, "Settle": 0.0058, "Delta": 1.0, "OI": 40, "Is_Call": None, "Contract_Month": "JUL26", "Option_Type": "SEC"},
+        ]
+    )
+
+    spot, _, classified = detect_spot_and_classify(raw_df, "EUR")
+
+    assert spot == pytest.approx(1.1542, abs=1e-6)
+    assert classified.sort_values("Strike")["Is_Call"].tolist() == [True, True, True, False]
 
 
 def test_atm_iv_estimate_prefers_liquid_near_atm_series():

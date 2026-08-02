@@ -259,7 +259,7 @@ async function fetchSyncStatus() {
     }
 }
 
-// Detect Zero Gamma strike (closest transition point to 0 GEX)
+// Detect Zero Gamma by interpolation; no sign crossing means no level.
 function findZeroGammaStrike(levels, spot) {
     if (!levels || levels.length < 2) return null;
     if (!spot) spot = state.data?.metadata?.spot || 0;
@@ -276,8 +276,10 @@ function findZeroGammaStrike(levels, spot) {
         const next = sorted[i+1];
         
         if ((curr.gex >= 0 && next.gex < 0) || (curr.gex < 0 && next.gex >= 0)) {
-            // Found sign transition. Zero gamma is approximately here.
-            const transitionStrike = Math.abs(curr.gex) < Math.abs(next.gex) ? curr.strike : next.strike;
+            const denominator = Math.abs(curr.gex) + Math.abs(next.gex);
+            if (denominator === 0) continue;
+            const weight = Math.abs(curr.gex) / denominator;
+            const transitionStrike = curr.strike + weight * (next.strike - curr.strike);
             const dist = Math.abs(transitionStrike - spot);
             if (dist < minDistance) {
                 minDistance = dist;
@@ -286,20 +288,7 @@ function findZeroGammaStrike(levels, spot) {
         }
     }
     
-    if (closestZeroStrike !== null) {
-        return closestZeroStrike;
-    }
-    
-    // Fallback: strike with the absolute minimum GEX
-    let minGex = Infinity;
-    let zeroStrike = null;
-    sorted.forEach(l => {
-        if (Math.abs(l.gex) < minGex) {
-            minGex = Math.abs(l.gex);
-            zeroStrike = l.strike;
-        }
-    });
-    return zeroStrike;
+    return closestZeroStrike;
 }
 
 // Fetch dashboard option level data
@@ -365,12 +354,13 @@ function clearDashboardData() {
 function updateMetrics(payload) {
     const meta = payload.metadata;
     const levels = payload.levels;
-    const offset = (state.adaptSpot && meta.live_offset) ? meta.live_offset : 0;
+    const offset = (state.adaptSpot && Number.isFinite(meta.live_offset)) ? meta.live_offset : 0;
     
     // Spot Price
     elements.metricSpot.textContent = formatPrice(meta.spot + offset);
     const currencyLabel = meta.currency.includes('USD') ? meta.currency : `${meta.currency}USD`;
-    elements.metricSpotCurrency.textContent = state.adaptSpot ? `Живой спот ${currencyLabel}` : `Опорный спот ${currencyLabel}`;
+    const adaptedLabel = meta.offset_status === 'historical_open' ? 'Исторический спот' : 'Живой спот';
+    elements.metricSpotCurrency.textContent = state.adaptSpot ? `${adaptedLabel} ${currencyLabel}` : `Опорный фьючерс ${currencyLabel}`;
     
     // Net GEX
     const totalGex = levels.reduce((acc, curr) => acc + curr.gex, 0);
@@ -388,7 +378,7 @@ function updateMetrics(payload) {
     // Zero Gamma
     const zeroGammaStrike = (meta.gamma_flip && meta.gamma_flip > 0) ? meta.gamma_flip : findZeroGammaStrike(levels, meta.spot);
     state.zeroGamma = zeroGammaStrike;
-    elements.metricZeroGamma.textContent = formatPrice(zeroGammaStrike + offset);
+    elements.metricZeroGamma.textContent = zeroGammaStrike === null ? '—' : formatPrice(zeroGammaStrike + offset);
     
     // Max Abs Gamma
     let maxGamma = 0;
@@ -404,13 +394,16 @@ function updateMetrics(payload) {
     elements.metricMaxGammaVal.textContent = `Сила: ${formatGamma(maxGamma)}`;
     
     // Option Months
-    elements.metricMonths.textContent = `DLY: ${meta.daily_month} | GLB: ${meta.global_month}`;
+    const dailyExpiry = meta.daily_expiry && meta.daily_expiry !== 'UNKNOWN' ? ` @ ${meta.daily_expiry}` : '';
+    const globalExpiry = meta.global_expiry && meta.global_expiry !== 'UNKNOWN' ? ` @ ${meta.global_expiry}` : '';
+    elements.metricMonths.textContent = `DLY: ${meta.daily_month}${dailyExpiry} | GLB: ${meta.global_month}${globalExpiry}`;
 }
 
 // Render data table (Dynamic: Calculated Levels or Key Strikes Only)
 function renderTable(levels, spot) {
     elements.tableBody.innerHTML = '';
-    const offset = (state.adaptSpot && state.data?.metadata?.live_offset) ? state.data.metadata.live_offset : 0;
+    const liveOffset = state.data?.metadata?.live_offset;
+    const offset = (state.adaptSpot && Number.isFinite(liveOffset)) ? liveOffset : 0;
     const adaptedSpot = spot + offset;
     
     if (state.activeTab === 'calculated') {
@@ -732,7 +725,7 @@ const verticalLinePlugin = {
         
         if (!meta) return;
         
-        const offset = (state.adaptSpot && meta.live_offset) ? meta.live_offset : 0;
+        const offset = (state.adaptSpot && Number.isFinite(meta.live_offset)) ? meta.live_offset : 0;
         
         // Helper function to draw a vertical line with label
         function drawVertical(strikeValue, color, labelText, lineStyle = []) {
@@ -789,7 +782,7 @@ function renderChart(payload) {
     const sortedData = [...payload.levels].sort((a, b) => a.strike - b.strike);
     
     const spot = payload.metadata.spot;
-    const offset = (state.adaptSpot && payload.metadata.live_offset) ? payload.metadata.live_offset : 0;
+    const offset = (state.adaptSpot && Number.isFinite(payload.metadata.live_offset)) ? payload.metadata.live_offset : 0;
     
     // Find closest strike to spot
     const closestStrikeRow = sortedData.reduce((prev, curr) => 
