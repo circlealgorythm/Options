@@ -30,7 +30,7 @@ input string   InpGithubToken = "";                // GitHub PAT (leave empty if
 
 input group "--- Display Settings ---"
 
-input int      InpHistoryDays = 14;                // Days of history to load
+input int      InpHistoryDays = 7;                 // Days of history to load
 
 input double   InpMinGexFilter = 1000.0;           // Minimum absolute GEX to display (filter noise)
 

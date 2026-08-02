@@ -19,9 +19,19 @@ def resolve_session_date(pdf_path, bulletin_date=None, today=None):
     except OSError:
         pass
 
+    resolved = None
     if publish_date is not None and publish_date >= today:
-        return today
-    return bulletin_date or publish_date or today
+        resolved = today
+    else:
+        resolved = bulletin_date or publish_date or today
+
+    # Adjust for weekend and Monday mapping
+    if today.weekday() in [0, 5, 6]:  # Monday, Saturday, Sunday
+        if resolved.weekday() in [3, 4, 5, 6]:  # Thursday, Friday, Saturday, Sunday
+            days_to_monday = (0 - resolved.weekday()) % 7
+            resolved += datetime.timedelta(days=days_to_monday)
+
+    return resolved
 
 
 MONTH_MAP = {
@@ -410,7 +420,7 @@ def copy_csv_to_mt5(csv_path, mt5_gex_dir=None):
     return copied_path
 
 
-def cleanup_old_files(target_dir=None, days_to_keep=14):
+def cleanup_old_files(target_dir=None, days_to_keep=7):
     import datetime
     base_dir = target_dir or os.environ.get("MT5_GEX_DIR") or DEFAULT_MT5_GEX_DIR
     if not base_dir or not os.path.isdir(base_dir):
@@ -1089,6 +1099,11 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     copy_csv_to_mt5(out_file)
 
 if __name__ == "__main__":
+    import sys
+    if datetime.date.today().weekday() in [5, 6] and "--force" not in sys.argv:
+        print("Weekend detected (Saturday/Sunday). Skipping pipeline execution to avoid confusion. Use --force to override.")
+        sys.exit(0)
+
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
     os.makedirs(DATA_DIR, exist_ok=True)
     
@@ -1246,7 +1261,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[USDCAD] Error during processing: {e}")
 
-    # Step 8: Clean up old GEX files in MT5 directory and local data directory (keep 14 days)
-    cleanup_old_files(days_to_keep=14)
-    cleanup_old_files(target_dir=DATA_DIR, days_to_keep=14)
+    # Step 8: Clean up old GEX files in MT5 directory and local data directory (keep 7 days)
+    cleanup_old_files(days_to_keep=7)
+    cleanup_old_files(target_dir=DATA_DIR, days_to_keep=7)
 

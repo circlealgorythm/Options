@@ -39,6 +39,38 @@ def test_resolve_session_date_uses_publish_date_only_after_current_bulletin(tmp_
     assert resolve_session_date(pdf_path, bulletin_date, today) == today
 
 
+def test_resolve_session_date_weekend_and_monday_mapping(tmp_path):
+    pdf_path = tmp_path / "bulletin.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    # Case 1: Run on Monday (2026-06-29) with Friday's bulletin (2026-06-26)
+    today = datetime.date(2026, 6, 29)
+    bulletin_date = datetime.date(2026, 6, 26)
+    # File modification time is Saturday morning (2026-06-27)
+    publish_ts = datetime.datetime(2026, 6, 27, 8, 0).timestamp()
+    os.utime(pdf_path, (publish_ts, publish_ts))
+    assert resolve_session_date(pdf_path, bulletin_date, today) == datetime.date(2026, 6, 29)
+
+    # Case 2: Run on Saturday (2026-06-27) with Friday's bulletin (2026-06-26)
+    today_sat = datetime.date(2026, 6, 27)
+    assert resolve_session_date(pdf_path, bulletin_date, today_sat) == datetime.date(2026, 6, 29)
+
+    # Case 3: Run on Friday (2026-06-26) with Thursday's bulletin (2026-06-25)
+    today_fri = datetime.date(2026, 6, 26)
+    bulletin_date_thu = datetime.date(2026, 6, 25)
+    publish_ts_fri = datetime.datetime(2026, 6, 26, 8, 0).timestamp()
+    os.utime(pdf_path, (publish_ts_fri, publish_ts_fri))
+    assert resolve_session_date(pdf_path, bulletin_date_thu, today_fri) == datetime.date(2026, 6, 26)
+
+    # Case 4: Run on Monday (2026-07-06) with Thursday's bulletin (2026-07-02) due to Friday holiday
+    today_mon_holiday = datetime.date(2026, 7, 6)
+    bulletin_date_thu_holiday = datetime.date(2026, 7, 2)
+    publish_ts_holiday = datetime.datetime(2026, 7, 3, 8, 0).timestamp()
+    os.utime(pdf_path, (publish_ts_holiday, publish_ts_holiday))
+    assert resolve_session_date(pdf_path, bulletin_date_thu_holiday, today_mon_holiday) == datetime.date(2026, 7, 6)
+
+
+
 def test_eur_friday_falls_back_to_weekly_before_other_daily_codes():
     calc_df = make_rows(
         [
