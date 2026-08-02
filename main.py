@@ -9,6 +9,7 @@ from src.parser import download_cme_bulletin, extract_bulletin_date, parse_cme_p
 from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma, find_gamma_flip
 from src.expiry import MONTH_MAP, resolve_option_expiry, trading_days_to_expiry
 from src.product_config import CATALOG_VERSION, contract_size_for, get_product_config
+from src.quality import evaluate_summary_anomalies, load_previous_summary
 
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 
@@ -1238,9 +1239,35 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     summary['Unknown_Option_Types'] = ';'.join(unknown_option_types) or 'NONE'
     summary['Estimated_Expiry_Types'] = ';'.join(estimated_expiry_types) or 'NONE'
     validate_mdd_summary(summary, currency)
+
+    baseline_date, previous_summary, baseline_warning = load_previous_summary(
+        output_dir, currency, calculation_date
+    )
+    anomaly_report = evaluate_summary_anomalies(
+        summary,
+        currency,
+        previous_summary=previous_summary,
+        baseline_warning=baseline_warning,
+    )
+    summary['Anomaly_Status'] = anomaly_report.status
+    summary['Anomaly_Codes'] = ';'.join(anomaly_report.codes) or 'NONE'
+    summary['Anomaly_Details'] = ';'.join(anomaly_report.details) or 'NONE'
+    summary['Anomaly_Baseline_Date'] = (
+        baseline_date.isoformat() if baseline_date is not None else 'NONE'
+    )
+    if anomaly_report.errors:
+        raise RuntimeError(
+            f"[{currency}] Summary anomaly check failed: "
+            f"{'; '.join(anomaly_report.details)}"
+        )
+    print(
+        f"[{currency}] Anomaly check: {anomaly_report.status}; "
+        f"baseline={summary['Anomaly_Baseline_Date'].iloc[0]}; "
+        f"codes={summary['Anomaly_Codes'].iloc[0]}"
+    )
     
     # Save to CSV
-    output_date = as_of_date if as_of_date is not None else datetime.date.today()
+    output_date = calculation_date
     today_str = output_date.strftime("%Y-%m-%d")
     filename = f"GEX_USDCAD_{today_str}.csv" if currency == "USDCAD" else f"GEX_{currency}USD_{today_str}.csv"
     out_file = os.path.join(output_dir, filename)

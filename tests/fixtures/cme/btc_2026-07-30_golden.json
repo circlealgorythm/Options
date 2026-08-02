@@ -1,0 +1,48 @@
+{
+  "fixture": "Section74_Cryptocurrency_2026-07-30.pdf",
+  "sha256": "02199e748675a3eb05ba8b159de535ef8374ad6e2c7240a701b36762a31e87d7",
+  "as_of_date": "2026-07-31",
+  "raw_rows": 270,
+  "option_types": ["BTC"],
+  "contract_months": ["AUG26", "DEC26", "JUL26", "OCT26", "SEP26"],
+  "output_rows": 145,
+  "levels": {
+    "Futures_Spot": 64775.0,
+    "R68_High": 66223.08149130412,
+    "R68_Low": 63326.91850869587,
+    "R95_High": 67671.16298260826,
+    "R95_Low": 61878.83701739174,
+    "Gamma_Flip": 65912.03957802747
+  },
+  "totals": {
+    "Total_GEX": -3117124.4610873386,
+    "Total_Abs_Gamma": 0.2766414330376471
+  },
+  "metadata": {
+    "Gamma_Flip_Status": "FOUND",
+    "Quality_Status": "DEGRADED",
+    "Quality_Reasons": "SPOT_MONTH_FALLBACK",
+    "Spot_Source": "PUT_CALL_PARITY",
+    "Spot_Reference_Month": "JUL26",
+    "Spot_Fallback_Details": "OCT26=GLOBAL_REFERENCE_OUTLIER_SERIES_FORWARD_CLUSTER",
+    "IV_Source": "WEIGHTED_ATM",
+    "IV_Expiry": "2026-08-28",
+    "IV_DTE": 20,
+    "IV_Input_Rows": 51,
+    "Input_Rows": 270,
+    "Used_Rows": 270,
+    "Daily_Month": "JUL26",
+    "Daily_Expiry": "2026-07-31",
+    "Global_Month": "JUL26",
+    "Global_Expiry": "2026-07-31",
+    "Anomaly_Status": "OK",
+    "Anomaly_Codes": "NONE",
+    "Anomaly_Baseline_Date": "NONE"
+  },
+  "mdd": {
+    "Daily_Call": {"Strike": 65000.0, "OI": 8.0, "Settle": 250.0},
+    "Daily_Put": {"Strike": 64750.0, "OI": 12.0, "Settle": 340.0},
+    "Global_Call": {"Strike": 105000.0, "OI": 63.0},
+    "Global_Put": {"Strike": 50000.0, "OI": 74.0}
+  }
+}
