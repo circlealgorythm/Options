@@ -333,6 +333,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "global_expiry": "UNKNOWN",
                 "gamma_flip": 0.0,
                 "gamma_flip_status": "UNKNOWN",
+                "quality_status": "UNKNOWN",
+                "catalog_version": "UNKNOWN",
+                "unknown_option_types": "NONE",
+                "estimated_expiry_types": "NONE",
             }
 
             with open(csv_path, 'r', encoding='utf-8') as f:
@@ -368,6 +372,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     g_expiry_idx = headers.index("Global_Expiry") if "Global_Expiry" in headers else -1
                     gamma_flip_idx = headers.index("Gamma_Flip") if "Gamma_Flip" in headers else -1
                     gamma_status_idx = headers.index("Gamma_Flip_Status") if "Gamma_Flip_Status" in headers else -1
+                    quality_status_idx = headers.index("Quality_Status") if "Quality_Status" in headers else -1
+                    catalog_version_idx = headers.index("Series_Catalog_Version") if "Series_Catalog_Version" in headers else -1
+                    unknown_types_idx = headers.index("Unknown_Option_Types") if "Unknown_Option_Types" in headers else -1
+                    estimated_types_idx = headers.index("Estimated_Expiry_Types") if "Estimated_Expiry_Types" in headers else -1
                 except ValueError as ve:
                     self.send_error_json(500, f"Missing required column in GEX CSV: {str(ve)}")
                     return
@@ -397,6 +405,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         if gamma_flip_idx != -1 and gamma_flip_idx < len(parts):
                             metadata["gamma_flip"] = float(parts[gamma_flip_idx])
                         if gamma_status_idx != -1: metadata["gamma_flip_status"] = parts[gamma_status_idx]
+                        if quality_status_idx != -1: metadata["quality_status"] = parts[quality_status_idx]
+                        if catalog_version_idx != -1: metadata["catalog_version"] = parts[catalog_version_idx]
+                        if unknown_types_idx != -1: metadata["unknown_option_types"] = parts[unknown_types_idx]
+                        if estimated_types_idx != -1: metadata["estimated_expiry_types"] = parts[estimated_types_idx]
 
                     levels.append({
                         "strike": float(parts[strike_idx]),

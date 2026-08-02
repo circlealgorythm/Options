@@ -2,6 +2,8 @@ import calendar
 import datetime
 import re
 
+from src.product_config import get_product_config
+
 
 MONTH_MAP = {
     "JAN": 1,
@@ -82,6 +84,11 @@ def _last_weekday(year, month, weekday):
     return value - datetime.timedelta(days=(value.weekday() - weekday) % 7)
 
 
+def _last_cme_trading_day(year, month):
+    last_day = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    return previous_cme_trading_day(last_day)
+
+
 def cme_full_close_holidays(year):
     """CME/US market holidays used for expiry adjustment and trading-day DTE."""
     holidays = {
@@ -122,11 +129,10 @@ def next_cme_trading_day(value):
 def _adjust_weekly_expiry(value, option_type):
     if is_cme_trading_day(value):
         return value
-    option_type = str(option_type or "").upper()
-    monday_series = bool(
-        re.match(r"^(Q[1-5]A|E[1-5]A|XMS|QMW|DMQ|SEC|MGB|MCM|G[1-5]M|GMW)$", option_type)
-    )
-    if value.weekday() == 0 and monday_series:
+    # All weekly candidates that land on Monday are Monday series by
+    # construction. CME moves their holiday expiry forward; the other weekly
+    # expiries move back to the preceding trading day.
+    if value.weekday() == calendar.MONDAY:
         return next_cme_trading_day(value)
     return previous_cme_trading_day(value)
 
@@ -176,57 +182,68 @@ def _monthly_expiry(month_code, currency):
     return previous_cme_trading_day(nth_weekday(year, month, calendar.FRIDAY, 3))
 
 
-_GENERIC_WEEKDAY_CODES = {
-    "SEC": calendar.MONDAY,
-    "TEC": calendar.TUESDAY,
-    "WEC": calendar.WEDNESDAY,
-    "THC": calendar.THURSDAY,
-    "FRC": calendar.FRIDAY,
-    "MGB": calendar.MONDAY,
-    "MGM": calendar.MONDAY,
-    "TGB": calendar.TUESDAY,
-    "WGB": calendar.WEDNESDAY,
-    "SBP": calendar.THURSDAY,
-    "FGB": calendar.FRIDAY,
-    "MCM": calendar.MONDAY,
-    "TCD": calendar.TUESDAY,
-    "WCD": calendar.WEDNESDAY,
-    "SCD": calendar.THURSDAY,
-    "XMS": calendar.MONDAY,
-    "XTS": calendar.TUESDAY,
-    "XWS": calendar.WEDNESDAY,
-    "XRS": calendar.THURSDAY,
-    "QMW": calendar.MONDAY,
-    "DMQ": calendar.MONDAY,
-    "QTW": calendar.TUESDAY,
-    "DTQ": calendar.TUESDAY,
-    "QWW": calendar.WEDNESDAY,
-    "DWQ": calendar.WEDNESDAY,
-    "QRW": calendar.THURSDAY,
-    "DRQ": calendar.THURSDAY,
-    "GMW": calendar.MONDAY,
-    "GWT": calendar.TUESDAY,
-    "GWW": calendar.WEDNESDAY,
-    "GWR": calendar.THURSDAY,
-}
+def _rolling_weekday_expiry(as_of_date, parsed_month, weekday, option_type):
+    expiry = next_weekday_on_or_after(as_of_date, weekday)
+    if parsed_month is not None:
+        year, month = parsed_month
+        contract_key = (year, month)
+        as_of_key = (as_of_date.year, as_of_date.month)
+        expiry_key = (expiry.year, expiry.month)
+        # A just-expired alias remains in the next bulletin. If advancing to
+        # the next weekday leaves its own contract month, keep the final
+        # matching weekday in that month so the row can be excluded as stale.
+        if contract_key <= as_of_key and expiry_key > contract_key:
+            expiry = _last_weekday(year, month, weekday)
+    return _adjust_weekly_expiry(expiry, option_type)
 
 
 def resolve_option_expiry(option_type, contract_month, currency, as_of_date=None):
-    """Resolve the actual option expiry, including weekday/week-number series."""
+    """Resolve an explicitly supported option series; unknown codes fail closed."""
     if as_of_date is None:
         as_of_date = datetime.date.today()
     option_type = str(option_type or "").upper()
     parsed = parse_contract_month(contract_month)
+    config = get_product_config(currency)
 
-    if option_type in _GENERIC_WEEKDAY_CODES:
-        expiry = next_weekday_on_or_after(as_of_date, _GENERIC_WEEKDAY_CODES[option_type])
-        return _adjust_weekly_expiry(expiry, option_type)
+    # Backward-compatible monthly helper used by month_to_expiry_date(). The
+    # production pipeline always supplies an explicit option type.
+    if not option_type:
+        return _monthly_expiry(contract_month, currency)
+    if config is None or option_type not in config.supported_codes:
+        return None
+
+    if option_type in config.monthly_codes:
+        return _monthly_expiry(contract_month, currency)
+
+    if option_type in config.eom_codes:
+        if parsed is None:
+            return None
+        return _last_cme_trading_day(*parsed)
+
+    if option_type in config.rolling_weekdays:
+        return _rolling_weekday_expiry(
+            as_of_date, parsed, config.rolling_weekdays[option_type], option_type
+        )
+
+    if option_type in config.fixed_occurrence_weekdays:
+        if parsed is None:
+            return None
+        weekday, occurrence = config.fixed_occurrence_weekdays[option_type]
+        expiry = nth_weekday(parsed[0], parsed[1], weekday, occurrence)
+        return _adjust_weekly_expiry(expiry, option_type) if expiry else None
 
     if parsed is not None:
         year, month = parsed
         weekly_patterns = (
             (r"^([1-5])(?:EU|BP|CD)$", calendar.FRIDAY),
+            (r"^(?:MO|MB|MD)([1-5])$", calendar.MONDAY),
+            (r"^(?:TU|TG|TL)([1-5])$", calendar.TUESDAY),
+            (r"^(?:WE|WG|WD)([1-5])$", calendar.WEDNESDAY),
+            (r"^(?:SU|SB|SD)([1-5])$", calendar.THURSDAY),
             (r"^OG([1-5])$", calendar.FRIDAY),
+            (r"^([1-5])MG$", calendar.MONDAY),
+            (r"^([1-5])WG$", calendar.WEDNESDAY),
+            (r"^([1-5])FG$", calendar.FRIDAY),
             (r"^G([1-5])M$", calendar.MONDAY),
             (r"^G([1-5])T$", calendar.TUESDAY),
             (r"^G([1-5])W$", calendar.WEDNESDAY),
@@ -250,7 +267,19 @@ def resolve_option_expiry(option_type, contract_month, currency, as_of_date=None
                     return None
                 return _adjust_weekly_expiry(expiry, option_type)
 
-    return _monthly_expiry(contract_month, currency)
+        micro_nas_match = re.match(r"^MN([1-5])([A-E])$", option_type)
+        if micro_nas_match:
+            weekday = {
+                "A": calendar.MONDAY,
+                "B": calendar.TUESDAY,
+                "C": calendar.WEDNESDAY,
+                "D": calendar.THURSDAY,
+                "E": calendar.FRIDAY,
+            }[micro_nas_match.group(2)]
+            expiry = nth_weekday(year, month, weekday, int(micro_nas_match.group(1)))
+            return _adjust_weekly_expiry(expiry, option_type) if expiry else None
+
+    return None
 
 
 def trading_days_to_expiry(as_of_date, expiry_date):

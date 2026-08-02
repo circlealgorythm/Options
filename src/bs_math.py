@@ -57,14 +57,25 @@ def calculate_gex(gamma, open_interest, contract_size, S):
         return 0.0
     return gamma * open_interest * contract_size * S * S * 0.01
 
-def calculate_absolute_gamma(gamma, open_interest):
+def calculate_absolute_gamma(gamma, open_interest, contract_size=1.0):
     """
-    Calculates Absolute Gamma.
-    Keep raw gamma-open-interest units for stable relative comparisons.
+    Absolute contract gamma across open interest and contract multiplier.
     """
-    return gamma * open_interest
+    if gamma <= 0.0 or open_interest <= 0.0 or contract_size <= 0.0:
+        return 0.0
+    return gamma * open_interest * contract_size
 
-def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0, times=None):
+def find_gamma_flip(
+    strikes,
+    ois,
+    is_calls,
+    ivs,
+    spot,
+    T=0.08,
+    r=0.0,
+    times=None,
+    multipliers=None,
+):
     """
     Finds the Spot price S where net GEX is zero.
     Expects arrays/lists of:
@@ -73,6 +84,7 @@ def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0, times=None
       - is_calls (boolean list where True = Call, False = Put)
       - ivs (Implied Volatilities)
       - times (optional per-row years-to-expiry; scalar T is the fallback)
+      - multipliers (optional per-row contract sizes)
 
     Returns None when the aggregate gamma does not cross zero in the search
     range. A minimum-magnitude grid point is not a valid zero-gamma level.
@@ -86,21 +98,30 @@ def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0, times=None
         if len(times) != len(strikes):
             raise ValueError("times must have the same length as strikes")
         row_times = times
+    if multipliers is None:
+        row_multipliers = [1.0] * len(strikes)
+    else:
+        if len(multipliers) != len(strikes):
+            raise ValueError("multipliers must have the same length as strikes")
+        row_multipliers = multipliers
 
     strike_values = np.asarray(strikes, dtype=float)
     oi_values = np.asarray(ois, dtype=float)
     iv_values = np.asarray(ivs, dtype=float)
     time_values = np.asarray(row_times, dtype=float)
+    multiplier_values = np.asarray(row_multipliers, dtype=float)
     sign_values = np.where(np.asarray(is_calls, dtype=bool), 1.0, -1.0)
     valid_rows = (
         (strike_values > 0.0)
         & (oi_values > 0.0)
         & (iv_values > 0.001)
         & (time_values > 0.0)
+        & (multiplier_values > 0.0)
         & np.isfinite(strike_values)
         & np.isfinite(oi_values)
         & np.isfinite(iv_values)
         & np.isfinite(time_values)
+        & np.isfinite(multiplier_values)
     )
     if not valid_rows.any() or not (sign_values[valid_rows] > 0).any() or not (sign_values[valid_rows] < 0).any():
         return None
@@ -108,6 +129,7 @@ def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0, times=None
     oi_values = oi_values[valid_rows]
     iv_values = iv_values[valid_rows]
     time_values = time_values[valid_rows]
+    multiplier_values = multiplier_values[valid_rows]
     sign_values = sign_values[valid_rows]
 
     def net_gamma_func(S):
@@ -119,7 +141,9 @@ def find_gamma_flip(strikes, ois, is_calls, ivs, spot, T=0.08, r=0.0, times=None
             + (r + 0.5 * iv_values**2) * time_values
         ) / (iv_values * sqrt_time)
         gamma_values = norm.pdf(d1) / (S * iv_values * sqrt_time)
-        return float(np.sum(gamma_values * oi_values * sign_values))
+        return float(
+            np.sum(gamma_values * oi_values * multiplier_values * sign_values)
+        )
 
     grid = np.linspace(0.5 * spot, 1.5 * spot, 401)
     vals = np.asarray([net_gamma_func(x) for x in grid], dtype=float)

@@ -46,3 +46,23 @@ def test_gold_monthly_expiry_matches_published_december_2009_date():
     as_of = datetime.date(2009, 10, 1)
 
     assert resolve_option_expiry("OG", "DEC09", "XAU", as_of) == datetime.date(2009, 11, 23)
+
+
+def test_unknown_series_fails_closed_instead_of_using_monthly_expiry():
+    as_of = datetime.date(2026, 7, 31)
+
+    assert resolve_option_expiry("NEWCODE", "AUG26", "EUR", as_of) is None
+
+
+def test_eom_and_bulletin_alias_expiries_are_explicit():
+    as_of = datetime.date(2026, 7, 31)
+
+    assert resolve_option_expiry("MINI", "AUG26", "NAS", as_of) == datetime.date(2026, 8, 31)
+    assert resolve_option_expiry("MMW", "AUG26", "SPX", as_of) == datetime.date(2026, 8, 3)
+    assert resolve_option_expiry("SEC", "JUL26", "EUR", as_of) == datetime.date(2026, 7, 30)
+
+
+def test_nas_qn_bulletin_alias_is_third_friday_weekly():
+    as_of = datetime.date(2026, 7, 31)
+
+    assert resolve_option_expiry("QN", "AUG26", "NAS", as_of) == datetime.date(2026, 8, 21)

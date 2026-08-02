@@ -23,3 +23,4 @@ def test_bs_gamma():
 def test_gex_is_dollar_gamma_for_one_percent_move():
     assert calculate_gex(0.02, 10, 100, 4000) == 3_200_000.0
     assert calculate_absolute_gamma(0.02, 10) == 0.2
+    assert calculate_absolute_gamma(0.02, 10, 100) == 20.0

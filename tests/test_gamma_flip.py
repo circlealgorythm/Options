@@ -53,3 +53,21 @@ def test_gamma_flip_uses_each_rows_expiry():
     )
 
     assert flip_price == pytest.approx(100.4621641126, abs=1e-6)
+
+
+def test_gamma_flip_weights_mixed_contract_sizes():
+    common = dict(
+        strikes=[95.0, 105.0],
+        ois=[1000, 1000],
+        is_calls=[False, True],
+        ivs=[0.2, 0.2],
+        spot=100.0,
+        T=0.08,
+    )
+
+    equal_size = find_gamma_flip(**common)
+    mixed_size = find_gamma_flip(**common, multipliers=[10.0, 100.0])
+
+    assert equal_size is not None
+    assert mixed_size is not None
+    assert mixed_size < equal_size - 5.0

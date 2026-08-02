@@ -396,7 +396,8 @@ function updateMetrics(payload) {
     // Option Months
     const dailyExpiry = meta.daily_expiry && meta.daily_expiry !== 'UNKNOWN' ? ` @ ${meta.daily_expiry}` : '';
     const globalExpiry = meta.global_expiry && meta.global_expiry !== 'UNKNOWN' ? ` @ ${meta.global_expiry}` : '';
-    elements.metricMonths.textContent = `DLY: ${meta.daily_month}${dailyExpiry} | GLB: ${meta.global_month}${globalExpiry}`;
+    const qualityStatus = meta.quality_status && meta.quality_status !== 'UNKNOWN' ? ` | DATA: ${meta.quality_status}` : '';
+    elements.metricMonths.textContent = `DLY: ${meta.daily_month}${dailyExpiry} | GLB: ${meta.global_month}${globalExpiry}${qualityStatus}`;
 }
 
 // Render data table (Dynamic: Calculated Levels or Key Strikes Only)

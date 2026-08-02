@@ -7,6 +7,7 @@ import pdfplumber
 from src.parser import download_cme_bulletin, extract_bulletin_date, parse_cme_pdf
 from src.bs_math import implied_volatility, bs_gamma, calculate_gex, calculate_absolute_gamma, find_gamma_flip
 from src.expiry import MONTH_MAP, resolve_option_expiry, trading_days_to_expiry
+from src.product_config import CATALOG_VERSION, contract_size_for, get_product_config
 
 DEFAULT_MT5_GEX_DIR = r"C:\Program Files\Wizense Global MT5 Terminal\MQL5\Files\GEX"
 
@@ -33,75 +34,6 @@ def resolve_session_date(pdf_path, bulletin_date=None, today=None):
             resolved += datetime.timedelta(days=days_to_monday)
 
     return resolved
-
-
-EUR_DAILY_BY_WEEKDAY = {0: 'SEC', 1: 'TEC', 2: 'WEC', 3: 'THC', 4: 'FRC'}
-GBP_DAILY_BY_WEEKDAY = {0: 'MGB', 1: 'TGB', 2: 'WGB', 3: 'SBP', 4: 'FGB'}
-
-EUR_DAILY_CODES = ['SEC', 'TEC', 'WEC', 'THC', 'FRC']
-EUR_WEEKLY_CODES = ['1EU', '2EU', '3EU', '4EU', '5EU']
-GBP_SHORT_CODES = ['MGB', 'TGB', 'WGB', 'SBP', 'FGB', 'MGM']
-GBP_WEEKLY_CODES = ['1BP', '2BP', '3BP', '4BP', '5BP']
-
-EUR_DAILY_CODE_DOW = {'SEC': 0, 'TEC': 1, 'WEC': 2, 'THC': 3, 'FRC': 4}
-EUR_WEEKLY_CODE_DOW = {'1EU': 0, '2EU': 1, '3EU': 2, '4EU': 3, '5EU': 4}
-GBP_SHORT_CODE_DOW = {'MGB': 0, 'MGM': 0, 'TGB': 1, 'WGB': 2, 'SBP': 3, 'FGB': 4}
-GBP_WEEKLY_CODE_DOW = {'1BP': 0, '2BP': 1, '3BP': 2, '4BP': 3, '5BP': 4}
-
-XAU_DAILY_BY_WEEKDAY = {0: 'GMW', 1: 'GWT', 2: 'GWW', 3: 'GWR', 4: 'OG1'}
-XAU_DAILY_CODES = ['GMW', 'GWT', 'GWW', 'GWR', 'OG1', 'OG2', 'OG3', 'OG4', 'OG5']
-XAU_WEEKLY_CODES = ['OG1', 'OG2', 'OG3', 'OG4', 'OG5']
-XAU_DAILY_CODE_DOW = {'GMW': 0, 'GWT': 1, 'GWW': 2, 'GWR': 3, 'OG1': 4}
-XAU_WEEKLY_CODE_DOW = {'OG1': 4, 'OG2': 4, 'OG3': 4, 'OG4': 4, 'OG5': 4}
-
-NAS_DAILY_BY_WEEKDAY = {0: 'Q1A', 1: 'Q1B', 2: 'Q1C', 3: 'Q1D', 4: 'QN1'}
-NAS_DAILY_CODES = [f'Q{i}{d}' for i in range(1, 6) for d in ['A', 'B', 'C', 'D']] + ['QN1', 'QN2', 'QN3', 'QN4', 'QN']
-NAS_WEEKLY_CODES = NAS_DAILY_CODES.copy()
-NAS_DAILY_CODE_DOW = {}
-for i in range(1, 6):
-    NAS_DAILY_CODE_DOW[f'Q{i}A'] = 0
-    NAS_DAILY_CODE_DOW[f'Q{i}B'] = 1
-    NAS_DAILY_CODE_DOW[f'Q{i}C'] = 2
-    NAS_DAILY_CODE_DOW[f'Q{i}D'] = 3
-for q in ['QN1', 'QN2', 'QN3', 'QN4', 'QN']:
-    NAS_DAILY_CODE_DOW[q] = 4
-NAS_WEEKLY_CODE_DOW = NAS_DAILY_CODE_DOW.copy()
-
-NAS_CALL_CODES_BY_WEEKDAY = {
-    0: ['QMW', 'DMQ', 'Q1A', 'Q2A', 'Q3A', 'Q4A', 'Q5A'],
-    1: ['QTW', 'DTQ', 'Q1B', 'Q2B', 'Q3B', 'Q4B', 'Q5B'],
-    2: ['QWW', 'DWQ', 'Q1C', 'Q2C', 'Q3C', 'Q4C', 'Q5C'],
-    3: ['QRW', 'DRQ', 'Q1D', 'Q2D', 'Q3D', 'Q4D', 'Q5D'],
-    4: ['QN', 'QN1', 'QN2', 'QN3', 'QN4'],
-}
-NAS_PUT_CODES = ['QN', 'QN1', 'QN2', 'QN3', 'QN4', 'QMW', 'QTW', 'QWW', 'QRW', 'DMQ', 'DTQ', 'DWQ', 'DRQ']
-
-BTC_DAILY_BY_WEEKDAY = {0: 'BTC', 1: 'BTC', 2: 'BTC', 3: 'BTC', 4: 'BTC'}
-BTC_DAILY_CODES = ['BTC']
-BTC_WEEKLY_CODES = ['BTC']
-BTC_DAILY_CODE_DOW = {'BTC': 0}
-BTC_WEEKLY_CODE_DOW = {'BTC': 0}
-
-
-
-CAD_DAILY_BY_WEEKDAY = {0: 'MCM', 1: 'TCD', 2: 'WCD', 3: 'SCD', 4: '1CD'}
-CAD_DAILY_CODES = ['MCM', 'TCD', 'WCD', 'SCD', '1CD', '2CD', '3CD', '4CD', '5CD']
-CAD_WEEKLY_CODES = CAD_DAILY_CODES.copy()
-CAD_DAILY_CODE_DOW = {
-    'MCM': 0, 'TCD': 1, 'WCD': 2, 'SCD': 3,
-    '1CD': 4, '2CD': 4, '3CD': 4, '4CD': 4, '5CD': 4
-}
-CAD_WEEKLY_CODE_DOW = CAD_DAILY_CODE_DOW.copy()
-
-SPX_DAILY_BY_WEEKDAY = {0: 'XMS', 1: 'XTS', 2: 'XWS', 3: 'XRS', 4: 'EOW'}
-SPX_DAILY_CODES = ['XMS', 'XTS', 'XWS', 'XRS', 'EOW1', 'EOW2', 'EOW3', 'EOW4', 'WK', 'EMINI', 'SME']
-SPX_WEEKLY_CODES = SPX_DAILY_CODES.copy()
-SPX_DAILY_CODE_DOW = {
-    'XMS': 0, 'XTS': 1, 'XWS': 2, 'XRS': 3,
-    'EOW1': 4, 'EOW2': 4, 'EOW3': 4, 'EOW4': 4,
-    'WK': 4, 'EMINI': 4, 'SME': 4
-}
-SPX_WEEKLY_CODE_DOW = SPX_DAILY_CODE_DOW.copy()
 
 
 def month_sort_key(month):
@@ -133,6 +65,24 @@ def compute_dte(month_code, currency=None, as_of_date=None, option_type=None):
     if expiry is None:
         return 21
     return trading_days_to_expiry(as_of_date, expiry)
+
+
+def filter_supported_option_series(raw_df, currency):
+    """Return catalog-supported rows and diagnostics for fail-closed filtering."""
+    config = get_product_config(currency)
+    if config is None:
+        raise KeyError(f"Unsupported product: {currency}")
+    if raw_df.empty:
+        return raw_df.copy(), [], 0
+
+    filtered = raw_df.copy()
+    if 'Option_Type' not in filtered.columns:
+        return filtered.iloc[0:0].copy(), ['<MISSING>'], len(filtered)
+    filtered['Option_Type'] = filtered['Option_Type'].fillna('').astype(str).str.upper()
+    supported_mask = filtered['Option_Type'].isin(config.supported_codes)
+    unknown_rows = filtered.loc[~supported_mask]
+    unknown_codes = sorted(code or '<MISSING>' for code in unknown_rows['Option_Type'].unique())
+    return filtered.loc[supported_mask].copy(), unknown_codes, len(unknown_rows)
 
 
 MIN_DTE_FOR_IV = 5  # Auto-roll to next month when DTE < this
@@ -367,17 +317,8 @@ def select_daily_contracts(calc_df, currency, as_of_date=None):
     if as_of_date is None:
         as_of_date = datetime.date.today()
     currency = currency.upper()
-    code_sets = {
-        'EUR': set(EUR_DAILY_CODES + EUR_WEEKLY_CODES),
-        'GBP': set(GBP_SHORT_CODES + GBP_WEEKLY_CODES),
-        'XAU': set(XAU_DAILY_CODES + XAU_WEEKLY_CODES),
-        'NAS': set(NAS_DAILY_CODES + NAS_PUT_CODES + [code for codes in NAS_CALL_CODES_BY_WEEKDAY.values() for code in codes]),
-        'BTC': set(BTC_DAILY_CODES),
-        'CAD': set(CAD_DAILY_CODES),
-        'USDCAD': set(CAD_DAILY_CODES),
-        'SPX': set(SPX_DAILY_CODES),
-    }
-    allowed_codes = code_sets.get(currency, set())
+    config = get_product_config(currency)
+    allowed_codes = config.daily_codes if config else frozenset()
     candidates = calc_df[calc_df['Option_Type'].isin(allowed_codes)].copy()
     if candidates.empty and currency == 'BTC':
         candidates = calc_df.copy()
@@ -800,14 +741,26 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     if raw_df.empty:
         print(f"No raw data for {currency}")
         return
-        
-    spot, spots_per_month, classified_df = detect_spot_and_classify(raw_df, currency)
+
+    calculation_date = as_of_date or datetime.date.today()
+    config = get_product_config(currency)
+    supported_raw, unknown_option_types, unknown_row_count = filter_supported_option_series(
+        raw_df, currency
+    )
+    if supported_raw.empty:
+        raise RuntimeError(
+            f"[{currency}] No supported CME option series remain after fail-closed filtering"
+        )
+
+    spot, spots_per_month, classified_df = detect_spot_and_classify(supported_raw, currency)
     print(f"[{currency}] Detected Spot price: {spot:.4f}")
     
     import math
     
     r = 0.0
-    calculation_date = as_of_date or datetime.date.today()
+    unresolved_expiry_count = 0
+    expired_row_count = 0
+    estimated_expiry_types = []
 
     if not classified_df.empty:
         classified_df = classified_df.reset_index(drop=True)
@@ -817,8 +770,37 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             ),
             axis=1,
         )
+        unresolved_expiry_count = int(classified_df['Expiry_Date'].isna().sum())
+        expired_mask = classified_df['Expiry_Date'].apply(
+            lambda expiry: expiry is not None and expiry < calculation_date
+        )
+        expired_row_count = int(expired_mask.sum())
+        classified_df = classified_df[
+            classified_df['Expiry_Date'].notna() & ~expired_mask
+        ].copy()
+        if classified_df.empty:
+            raise RuntimeError(
+                f"[{currency}] No non-expired option rows with a resolved CME expiry"
+            )
+
+        estimated_expiry_types = sorted(
+            set(classified_df['Option_Type']) & set(config.rolling_weekdays)
+        )
+        classified_df['_Estimated_Expiry'] = classified_df['Option_Type'].isin(
+            config.rolling_weekdays
+        )
+        # Prefer an exact numbered code over its bulletin aggregate alias when
+        # both text layers describe the same contract row.
+        classified_df.sort_values('_Estimated_Expiry', inplace=True)
+        classified_df.drop_duplicates(
+            subset=[
+                'Contract_Month', 'Expiry_Date', 'Strike', 'Settle', 'OI', 'Is_Call'
+            ],
+            keep='first',
+            inplace=True,
+        )
         classified_df['DTE'] = classified_df['Expiry_Date'].apply(
-            lambda expiry: trading_days_to_expiry(calculation_date, expiry) if expiry else 21
+            lambda expiry: trading_days_to_expiry(calculation_date, expiry)
         )
         classified_df['_T'] = classified_df['DTE'].apply(
             lambda dte: max(float(dte) / 252.0, 1.0 / 252.0)
@@ -868,8 +850,19 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         
     sigma_1d = spot * iv_atm * (1.0 / math.sqrt(252.0))
     print(f"[{currency}] ATM IV: {iv_atm:.2%}, Daily Sigma: {sigma_1d:.5f}")
-    
-    contract_size = 100000 if currency == 'USDCAD' else (5 if currency == 'BTC' else (20 if currency == 'NAS' else (100 if currency == 'XAU' else (125000 if currency == 'EUR' else (50 if currency == 'SPX' else 62500)))))
+
+    quality_status = 'WARN' if unknown_row_count or unresolved_expiry_count else (
+        'ESTIMATED' if estimated_expiry_types else 'OK'
+    )
+    print(
+        f"[{currency}] Data quality: {quality_status}; input={len(raw_df)}, "
+        f"used={len(classified_df)}, unknown={unknown_row_count}, "
+        f"unresolved_expiry={unresolved_expiry_count}, expired={expired_row_count}"
+    )
+    if unknown_option_types:
+        print(f"[{currency}] Excluded unknown option types: {', '.join(unknown_option_types)}")
+    if estimated_expiry_types:
+        print(f"[{currency}] Estimated bulletin aliases: {', '.join(estimated_expiry_types)}")
     
     calculated_rows = []
     strikes_list = []
@@ -877,6 +870,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     is_calls_list = []
     ivs_list = []
     times_list = []
+    multipliers_list = []
     
     for idx, row in classified_df.iterrows():
         K = row['Strike']
@@ -887,6 +881,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
                 
         price = row['Settle']
         T = float(row.get('_T', 0.08))
+        contract_size = contract_size_for(currency, row['Option_Type'])
         
         # Cap deep ITM/OTM strikes: if strike is >30% from spot, zero GEX
         # These are noise that blows up the visual scale
@@ -908,12 +903,12 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
             iv = implied_volatility(price, local_spot, K, T, r, 'C')
             gamma = bs_gamma(local_spot, K, T, r, iv) if iv > 0.001 else 0.0
             gex = calculate_gex(gamma, row['OI'], contract_size, local_spot)
-            abs_gamma = calculate_absolute_gamma(gamma, row['OI'])
+            abs_gamma = calculate_absolute_gamma(gamma, row['OI'], contract_size)
         else:
             iv = implied_volatility(price, local_spot, K, T, r, 'P')
             gamma = bs_gamma(local_spot, K, T, r, iv) if iv > 0.001 else 0.0
             gex = -calculate_gex(gamma, row['OI'], contract_size, local_spot)
-            abs_gamma = calculate_absolute_gamma(gamma, row['OI'])
+            abs_gamma = calculate_absolute_gamma(gamma, row['OI'], contract_size)
 
         call_oi = row['OI'] if is_call else 0
         put_oi = row['OI'] if not is_call else 0
@@ -939,10 +934,18 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         is_calls_list.append(is_call)
         ivs_list.append(iv)
         times_list.append(T)
+        multipliers_list.append(contract_size)
         
     calc_df = pd.DataFrame(calculated_rows)
     gamma_flip_val = find_gamma_flip(
-        strikes_list, ois_list, is_calls_list, ivs_list, spot, r=r, times=times_list
+        strikes_list,
+        ois_list,
+        is_calls_list,
+        ivs_list,
+        spot,
+        r=r,
+        times=times_list,
+        multipliers=multipliers_list,
     )
     if gamma_flip_val is None:
         print(f"[{currency}] Gamma Flip: no zero crossing in the validated search range")
@@ -961,17 +964,7 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
         return pd.DataFrame(columns=['Strike', oi_col])
 
     # Determine Global DF
-    global_codes = {
-        'EUR': ['EUU'],
-        'GBP': ['GBU'],
-        'XAU': ['OG'],
-        'NAS': ['QN'],
-        'BTC': ['BTC'],
-        'USDCAD': ['CAU'],
-        'SPX': ['MINI', 'EMINI']
-    }.get(currency, ['OG'])
-    
-    global_df = calc_df[calc_df['Option_Type'].isin(global_codes)]
+    global_df = calc_df[calc_df['Option_Type'].isin(config.global_codes)]
     if not global_df.empty:
         call_month_oi = global_df.groupby('Contract_Month')['Call_OI'].sum()
         put_month_oi = global_df.groupby('Contract_Month')['Put_OI'].sum()
@@ -1018,7 +1011,8 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     summary = summary.merge(global_call, on='Strike', how='left')
     summary = summary.merge(global_put, on='Strike', how='left')
     
-    summary.fillna(0.0, inplace=True)
+    for column in summary.columns.difference(['Currency']):
+        summary[column] = pd.to_numeric(summary[column], errors='coerce').fillna(0.0)
     
     summary.rename(columns={'GEX': 'Total_GEX', 'Abs_Gamma': 'Total_Abs_Gamma'}, inplace=True)
     summary.insert(0, 'Currency', currency)
@@ -1043,6 +1037,15 @@ def calculate_gex_pipeline(raw_df, currency, output_dir, as_of_date=None):
     summary['Futures_Spot'] = spot
     summary['Gamma_Flip'] = gamma_flip_val if gamma_flip_val is not None else 0.0
     summary['Gamma_Flip_Status'] = 'FOUND' if gamma_flip_val is not None else 'NO_CROSSING'
+    summary['Quality_Status'] = quality_status
+    summary['Series_Catalog_Version'] = CATALOG_VERSION
+    summary['Input_Rows'] = len(raw_df)
+    summary['Used_Rows'] = len(classified_df)
+    summary['Excluded_Unknown_Rows'] = unknown_row_count
+    summary['Excluded_Unresolved_Expiry_Rows'] = unresolved_expiry_count
+    summary['Excluded_Expired_Rows'] = expired_row_count
+    summary['Unknown_Option_Types'] = ';'.join(unknown_option_types) or 'NONE'
+    summary['Estimated_Expiry_Types'] = ';'.join(estimated_expiry_types) or 'NONE'
     validate_mdd_summary(summary, currency)
     
     # Save to CSV
@@ -1112,7 +1115,7 @@ if __name__ == "__main__":
             print(f"[XAU] CME bulletin trade date: {xau_bulletin_date}; session date: {session_date}")
             xau_raw = parse_cme_pdf(xau_dest, "XAU", is_call_only=None)
             if not xau_raw.empty:
-                gold_option_types = ['OG', 'GMW', 'GWT', 'GWW', 'GWR', 'OG1', 'OG2', 'OG3', 'OG4', 'OG5', 'MMG', 'FMG']
+                gold_option_types = get_product_config('XAU').supported_codes
                 xau_raw = xau_raw[xau_raw['Option_Type'].isin(gold_option_types)]
             calculate_gex_pipeline(xau_raw, "XAU", DATA_DIR, session_date)
         except Exception as e:
