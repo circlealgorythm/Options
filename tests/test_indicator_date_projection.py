@@ -14,7 +14,7 @@ def test_missing_today_is_not_filled_with_historical_levels():
 
 def test_visual_overlap_handling_preserves_the_existing_level_selection():
     source = INDICATOR_PATH.read_text(encoding="utf-8")
-    overlap_block = source.split("if(InpPreventLabelOverlap", 1)[1].split(
+    overlap_block = source.split("int label_lane[];", 1)[1].split(
         'PrintFormat("CME GEX display pruning', 1
     )[0]
 
@@ -44,8 +44,27 @@ def test_labels_start_near_lines_and_collisions_use_opposite_sides():
     assert "label_on_right ? (time_end - 1200) : (time_start + 1200)" in source
     assert "ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER" in source
     assert "ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER" in source
-    assert "datetime flip_txt_time = time_start + 1200;" in source
-    assert "datetime label_time = time_start + 1200;" in source
+    assert "AllocateSpecialLabelLane" in source
+    assert "ResolveLabelPlacement(zero_gamma_label_lane" in source
+    assert "ResolveLabelPlacement(daily_call_mdd_label_lane" in source
+    assert "ResolveLabelPlacement(daily_put_mdd_label_lane" in source
+    assert "if(!used_lanes[2]) return 2;" in source
+
+
+def test_fw_offset_uses_exact_calendar_day_and_reports_real_source():
+    source = INDICATOR_PATH.read_text(encoding="utf-8")
+    reference_block = source.split("double GetDailySpotReferenceWithRetry", 1)[1].split(
+        "//| Parse CSV contents and draw levels", 1
+    )[0]
+
+    assert "CopyRates(symbol, PERIOD_D1, day_start, day_end" in reference_block
+    assert "CopyRates(symbol, _Period, day_start, day_end" in reference_block
+    assert "intraday_rates[i].time >= day_start" in reference_block
+    assert "iBarShift(symbol, _Period, time_val)" not in reference_block
+    assert 'out_source = "mt5_d1_open";' in reference_block
+    assert 'out_source = "mt5_intraday_open_fallback";' in reference_block
+    assert 'out_source = "mt5_live_bid_fallback";' in reference_block
+    assert "fw_offset_status = spot_reference_source;" in source
 
 
 def test_indicator_exports_the_final_visible_mt5_level_selection():

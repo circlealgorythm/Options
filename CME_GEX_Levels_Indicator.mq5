@@ -773,6 +773,56 @@ struct IndicatorManifestContext {
    string estimated_expiry_types;
 };
 
+int AllocateSpecialLabelLane(double price, bool prefer_above,
+                             OptionRow &rows[], bool &draw_rows[], int valid_rows,
+                             int &row_lanes[], double min_label_gap,
+                             double &special_prices[], int &special_lanes[], int special_count)
+{
+   bool used_lanes[4] = {false, false, false, false};
+   if(InpPreventLabelOverlap && min_label_gap > 0.0)
+   {
+      for(int i = 0; i < valid_rows; i++)
+      {
+         if(draw_rows[i] && MathAbs(price - rows[i].strike) < min_label_gap)
+            used_lanes[row_lanes[i] % 4] = true;
+      }
+      for(int i = 0; i < special_count; i++)
+      {
+         if(MathAbs(price - special_prices[i]) < min_label_gap)
+            used_lanes[special_lanes[i] % 4] = true;
+      }
+   }
+
+   if(prefer_above)
+   {
+      if(!used_lanes[0]) return 0;
+      if(!used_lanes[2]) return 2;
+      if(!used_lanes[1]) return 1;
+      if(!used_lanes[3]) return 3;
+   }
+   else
+   {
+      if(!used_lanes[1]) return 1;
+      if(!used_lanes[3]) return 3;
+      if(!used_lanes[0]) return 0;
+      if(!used_lanes[2]) return 2;
+   }
+   return special_count % 4;
+}
+
+void ResolveLabelPlacement(int lane, datetime time_start, datetime time_end,
+                           datetime &label_time, ENUM_ANCHOR_POINT &label_anchor)
+{
+   int quadrant = lane % 4;
+   bool on_right = (quadrant >= 2);
+   bool above_line = ((quadrant % 2) == 0);
+   label_time = on_right ? (time_end - 1200) : (time_start + 1200);
+   if(on_right)
+      label_anchor = above_line ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER;
+   else
+      label_anchor = above_line ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER;
+}
+
 string JsonEscape(string value)
 {
    StringReplace(value, "\\", "\\\\");
@@ -1127,50 +1177,77 @@ color FadeHistoricalColor(color source, int session_age, int minimum_tint)
    return BlendWithChartBackground(source, tint_pct);
 }
 
-double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_today, int &out_shift)
+double GetDailySpotReferenceWithRetry(string symbol, datetime time_val, bool is_today,
+                                      int &out_shift, string &out_source)
 {
-   out_shift = -1;
-   double spot_reference = 0.0;
+   out_shift = -1;
+
+   out_source = "unavailable";
+   double spot_reference = 0.0;
+
+   datetime day_start = StringToTime(TimeToString(time_val, TIME_DATE));
+
+   datetime day_end = day_start + 86399;
    for(int r = 0; r < 20; r++)
    {
       ResetLastError();
-      int shift = iBarShift(symbol, PERIOD_D1, time_val);
-      if(shift >= 0)
-      {
-         spot_reference = iOpen(symbol, PERIOD_D1, shift);
-         if(spot_reference > 0.0)
-         {
-            out_shift = shift;
-            return spot_reference;
-         }
-      }
+      MqlRates daily_rates[];
+      ArraySetAsSeries(daily_rates, false);
+      int copied = CopyRates(symbol, PERIOD_D1, day_start, day_end, daily_rates);
+      if(copied > 0)
+      {
+         for(int i = 0; i < copied; i++)
+         {
+            if(daily_rates[i].time >= day_start && daily_rates[i].time <= day_end &&
+               daily_rates[i].open > 0.0)
+            {
+               spot_reference = daily_rates[i].open;
+               out_shift = iBarShift(symbol, PERIOD_D1, daily_rates[i].time, true);
+               out_source = "mt5_d1_open";
+               return spot_reference;
+            }
+         }
+      }
       // Request daily history loading for this specific date, to pull the bar into terminal cache
       datetime temp[];
-      CopyTime(symbol, PERIOD_D1, time_val, 1, temp);
+      CopyTime(symbol, PERIOD_D1, day_start, day_end, temp);
       Sleep(20);
    }
-   // Fallback using chart timeframe (_Period) if D1 history is not synchronized.
-   // This is robust for both historical days and today.
-   if(spot_reference <= 0.0)
-   {
-      int fallback_shift = iBarShift(symbol, _Period, time_val);
-      if(fallback_shift >= 0)
-      {
-         spot_reference = iOpen(symbol, _Period, fallback_shift);
-         if(spot_reference > 0.0)
-         {
-            out_shift = fallback_shift;
-         }
-      }
+   // Use only an intraday bar whose open time belongs to the requested date.
+   // A non-exact iBarShift at midnight can silently return Friday for Monday.
+   if(spot_reference <= 0.0)
+   {
+      MqlRates intraday_rates[];
+      ArraySetAsSeries(intraday_rates, false);
+      int copied = CopyRates(symbol, _Period, day_start, day_end, intraday_rates);
+      if(copied > 0)
+      {
+         for(int i = 0; i < copied; i++)
+         {
+            if(intraday_rates[i].time >= day_start && intraday_rates[i].time <= day_end &&
+               intraday_rates[i].open > 0.0)
+            {
+               spot_reference = intraday_rates[i].open;
+               out_shift = iBarShift(symbol, _Period, intraday_rates[i].time, true);
+               out_source = "mt5_intraday_open_fallback";
+               break;
+            }
+         }
+      }
       // Ultimate fallback to Bid for today
       if(spot_reference <= 0.0 && is_today)
       {
-         spot_reference = SymbolInfoDouble(symbol, SYMBOL_BID);
+         spot_reference = SymbolInfoDouble(symbol, SYMBOL_BID);
+
+         if(spot_reference > 0.0)
+
+            out_source = "mt5_live_bid_fallback";
          GlobalVariableSet("CMEGEX_Desync_" + IntegerToString(ChartID()), 1.0);
       }
       if(spot_reference > 0.0)
       {
-         PrintFormat("Warning: D1 history for %s (%s) not synchronized after retries. Using fallback spot reference %.5f.", symbol, TimeToString(time_val, TIME_DATE), spot_reference);
+         PrintFormat("Warning: D1 history for %s (%s) not synchronized after retries. Using %s spot reference %.5f.",
+                     symbol, TimeToString(time_val, TIME_DATE), out_source, spot_reference);
       }
       else
       {
@@ -1502,7 +1579,10 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
       TimeToStruct(TimeCurrent(), now_dt);
       string today_str = StringFormat("%04d-%02d-%02d", now_dt.year, now_dt.mon, now_dt.day);
       bool is_today = (date_str == today_str);
-      double spot_price = GetDailySpotReferenceWithRetry(Symbol(), time_start, is_today, shift);
+      string spot_reference_source = "unavailable";
+
+      double spot_price = GetDailySpotReferenceWithRetry(Symbol(), time_start, is_today, shift,
+                                                         spot_reference_source);
       if(spot_price > 0.0)
       {
          double candidate_offset = spot_price - futures_spot;
@@ -1510,11 +1590,11 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          if(InpMaxAutoOffsetPercent <= 0.0 || candidate_pct <= InpMaxAutoOffsetPercent)
          {
             fw_offset = candidate_offset;
-            fw_offset_status = "mt5_d1_open";
+            fw_offset_status = spot_reference_source;
          }
          else
          {
-            fw_offset_status = "auto_rejected_manual_fallback";
+            fw_offset_status = "auto_rejected_" + spot_reference_source + "_manual_fallback";
             PrintFormat("Warning: Rejected implausible auto offset for %s: %.5f (%.2f%%). Keeping manual offset %.5f.",
                         date_str, candidate_offset, candidate_pct, fw_offset);
          }
@@ -1657,9 +1737,10 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
    int label_lane[];
    ArrayResize(label_lane, valid_rows);
    ArrayInitialize(label_lane, 0);
+   double min_label_gap = (reference_spot > 0.0 && InpMinLabelGapPercent > 0.0)
+                          ? reference_spot * InpMinLabelGapPercent / 100.0 : 0.0;
    if(InpPreventLabelOverlap && reference_spot > 0.0 && InpMinLabelGapPercent > 0.0)
    {
-      double min_label_gap = reference_spot * InpMinLabelGapPercent / 100.0;
       bool used_lanes[];
       ArrayResize(used_lanes, valid_rows);
       for(int i = 0; i < valid_rows; i++)
@@ -1680,6 +1761,51 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          while(free_lane < valid_rows && used_lanes[free_lane])
             free_lane++;
          label_lane[i] = free_lane;
+      }
+   }
+
+   double special_label_prices[];
+   int special_label_lanes[];
+   ArrayResize(special_label_prices, 3);
+   ArrayResize(special_label_lanes, 3);
+   int special_label_count = 0;
+   int zero_gamma_label_lane = 0;
+   int daily_call_mdd_label_lane = 0;
+   int daily_put_mdd_label_lane = 1;
+
+   if(gamma_flip > 0.0)
+   {
+      zero_gamma_label_lane = AllocateSpecialLabelLane(
+         gamma_flip, true, rows, draw_rows, valid_rows, label_lane, min_label_gap,
+         special_label_prices, special_label_lanes, special_label_count);
+      special_label_prices[special_label_count] = gamma_flip;
+      special_label_lanes[special_label_count] = zero_gamma_label_lane;
+      special_label_count++;
+   }
+
+   for(int i = 0; i < valid_rows; i++)
+   {
+      if(!draw_rows[i])
+         continue;
+      if(rows[i].strike == max_daily_call_oi_strike && rows[i].daily_call_settle > 0.0)
+      {
+         double call_mdd_price = rows[i].strike + rows[i].daily_call_settle;
+         daily_call_mdd_label_lane = AllocateSpecialLabelLane(
+            call_mdd_price, true, rows, draw_rows, valid_rows, label_lane, min_label_gap,
+            special_label_prices, special_label_lanes, special_label_count);
+         special_label_prices[special_label_count] = call_mdd_price;
+         special_label_lanes[special_label_count] = daily_call_mdd_label_lane;
+         special_label_count++;
+      }
+      if(rows[i].strike == max_daily_put_oi_strike && rows[i].daily_put_settle > 0.0)
+      {
+         double put_mdd_price = rows[i].strike - rows[i].daily_put_settle;
+         daily_put_mdd_label_lane = AllocateSpecialLabelLane(
+            put_mdd_price, false, rows, draw_rows, valid_rows, label_lane, min_label_gap,
+            special_label_prices, special_label_lanes, special_label_count);
+         special_label_prices[special_label_count] = put_mdd_price;
+         special_label_lanes[special_label_count] = daily_put_mdd_label_lane;
+         special_label_count++;
       }
    }
 
@@ -1778,21 +1904,23 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
          // Text label next to the line
          string flip_txt = flip_name + "_TXT";
          ObjectDelete(0, flip_txt);
-         datetime flip_txt_time = time_start + 1200;
+         datetime flip_txt_time;
+         ENUM_ANCHOR_POINT flip_txt_anchor;
+         ResolveLabelPlacement(zero_gamma_label_lane, time_start, time_end,
+                               flip_txt_time, flip_txt_anchor);
          if(ObjectCreate(0, flip_txt, OBJ_TEXT, 0, flip_txt_time, chart_gamma_flip))
          {
             ObjectSetString(0, flip_txt, OBJPROP_TEXT, "Zero Gamma");
             ObjectSetInteger(0, flip_txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorZeroGamma, session_age, 65));
             ObjectSetInteger(0, flip_txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, flip_txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+            ObjectSetInteger(0, flip_txt, OBJPROP_ANCHOR, flip_txt_anchor);
             ObjectSetInteger(0, flip_txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, flip_txt, OBJPROP_HIDDEN, true);
          }
       }
    }
-   datetime label_time = time_start + 1200;
-   for(int i = 0; i < valid_rows; i++)
+   for(int i = 0; i < valid_rows; i++)
    {
       if(!draw_rows[i])
          continue;
@@ -1954,12 +2082,16 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Daily Call MDD Premium: %.4f", settle));
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
+            datetime mdd_label_time;
+            ENUM_ANCHOR_POINT mdd_label_anchor;
+            ResolveLabelPlacement(daily_call_mdd_label_lane, time_start, time_end,
+                                  mdd_label_time, mdd_label_anchor);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, mdd_label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDCall, session_age, 65));
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, txt, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+            ObjectSetInteger(0, txt, OBJPROP_ANCHOR, mdd_label_anchor);
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
@@ -1983,12 +2115,16 @@ bool ParseCSV(const string &csv_data, string date_str, string &out_global_month)
             ObjectSetString(0, name, OBJPROP_TOOLTIP, StringFormat("Daily Put MDD Premium: %.4f", settle));
             string txt = name + "_TXT";
             ObjectDelete(0, txt);
-            ObjectCreate(0, txt, OBJ_TEXT, 0, label_time, mdd);
+            datetime mdd_label_time;
+            ENUM_ANCHOR_POINT mdd_label_anchor;
+            ResolveLabelPlacement(daily_put_mdd_label_lane, time_start, time_end,
+                                  mdd_label_time, mdd_label_anchor);
+            ObjectCreate(0, txt, OBJ_TEXT, 0, mdd_label_time, mdd);
             ObjectSetString(0, txt, OBJPROP_TEXT, "MDD");
             ObjectSetInteger(0, txt, OBJPROP_COLOR, FadeHistoricalColor(InpColorMDDPut, session_age, 65));
             ObjectSetInteger(0, txt, OBJPROP_FONTSIZE, 8);
             ObjectSetString(0, txt, OBJPROP_FONT, "Consolas");
-            ObjectSetInteger(0, txt, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+            ObjectSetInteger(0, txt, OBJPROP_ANCHOR, mdd_label_anchor);
             ObjectSetInteger(0, txt, OBJPROP_SELECTABLE, false);
             ObjectSetInteger(0, txt, OBJPROP_HIDDEN, true);
          }
